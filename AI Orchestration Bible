@@ -1,0 +1,1177 @@
+# AI Orchestration Bible
+
+> **Platform:** Mike (internally "Prism") — Legal AI Platform
+> **Version:** 1.0
+> **Last Updated:** 2026-07-14
+
+---
+
+## 1. What This Document Is
+
+This is the complete guide to how Mike's AI thinks, decides, and acts. It covers every layer of the system — from the moment a user types a message to the moment a final, validated, legally-caveated response lands on screen.
+
+If you are a developer, AI engineer, or technical lead working on Mike, this document is your single source of truth for understanding the orchestration architecture. It explains the "why" behind design decisions, the flow of data between components, and the safety rails that keep the system from producing harmful legal output.
+
+**Who should read this:**
+
+- Backend engineers working on the orchestrator pipeline
+- AI/ML engineers tuning intent classification, task planning, or agent behavior
+- Product engineers building UI features that consume orchestration SSE events
+- QA engineers testing orchestration edge cases
+- New team members onboarding onto the Mike codebase
+
+---
+
+## 2. The Big Picture — How Mike Thinks
+
+Think of Mike as a **large law firm with specialized departments**. When a client walks in with a request:
+
+1. **The receptionist** (Intent Classifier) listens to what the client wants and decides which department should handle it.
+2. **The managing partner** (Task Planner) breaks the request into specific work items and assigns them to the right specialists.
+3. **The specialists** (Agents) each do their piece of work — research, drafting, compliance review, document analysis — using their own tools and expertise.
+4. **The quality partner** (Self-Critique Agent) reviews everything before it goes to the client.
+5. **The senior partner** (Response Generator) combines all the work into one polished, professional deliverable.
+6. **The ethics officer** (Output Validator) checks that nothing violates legal ethics rules before it leaves the firm.
+
+The entire flow happens in real-time, streaming status updates to the user as each step completes.
+
+### The Two-Minute Summary
+
+```
+User Message
+    │
+    ▼
+┌─────────────────┐
+│ Intent Classifier│ ← "What does the user want?"
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    │         │
+  Simple    Complex/Multi-Agent
+    │         │
+    ▼         ▼
+ Legacy    Task Planner
+ Chat       │
+            ▼
+      Agent Coordinator
+            │
+     ┌──────┼──────┐
+     ▼      ▼      ▼
+  Research  Doc   Compliance  Drafting
+  Agent    Agent   Agent      Agent
+     │      │      │          │
+     └──────┼──────┘──────────┘
+            ▼
+      Response Generator
+            │
+            ▼
+      Output Validator
+            │
+            ▼
+      Self-Critique Agent (if issues found)
+            │
+            ▼
+      Final Response → User
+```
+
+---
+
+## 3. The Two Orchestration Systems
+
+Mike has **two orchestration systems** that coexist. Understanding which one handles which request is critical.
+
+### 3.1 The Legacy Chat Orchestrator
+
+**File:** `backend/src/lib/chatOrchestrator.ts` (4,145 lines)
+
+This is the original system. It handles **real-time chat** — the conversational back-and-forth that most users experience. It is a single-agent system: one LLM call, one response, with tool-calling capabilities.
+
+**When it handles requests:**
+
+- Simple questions ("What is an NDA?")
+- Template filling ("Fill in this contract template")
+- When orchestration is disabled via environment variable (`PRISM_ORCHESTRATION_ENABLED=false`)
+- When the user is in a direct chat (not project/workspace scope)
+- When intent classification confidence is below 0.65
+- As a **fallback** when the new orchestrator fails
+
+**Key characteristics:**
+
+- Single LLM turn with tool-calling loop
+- Streams responses via SSE
+- Has access to 50+ tools (document operations, search, email, workspace, etc.)
+- Handles the Legal Safety Contract prepending
+- Manages conversation history and context assembly
+
+### 3.2 The New Multi-Agent Orchestrator
+
+**File:** `backend/src/lib/orchestrator/index.ts` (488 lines)
+
+This is the newer, more sophisticated system. It handles **complex legal tasks** that require multiple specialists working together. It decomposes requests into sub-tasks, runs them through specialized agents, validates the output, and synthesizes everything into one response.
+
+**When it handles requests:**
+
+- Classification is `complex` or `multi_agent` with confidence > 0.65
+- User is in project or workspace scope (`routeMode === "project"` or `"workspace"`)
+- Orchestration is explicitly enabled (`orchestrationEnabled: true`)
+
+**Key characteristics:**
+
+- Multi-agent pipeline with specialized agents
+- Task planning with dependency resolution
+- Self-critique and output validation
+- Memory and learning system integration
+- Rate limiting per user
+- Automatic fallback to legacy on any failure
+
+### 3.3 The Decision Flow
+
+```typescript
+// From orchestrator/index.ts
+function shouldConsiderOrchestration(params): boolean {
+  if (process.env.PRISM_ORCHESTRATION_ENABLED === "false") return false;
+  if (params.orchestrationEnabled === false) return false;
+  if (params.orchestrationEnabled === true) return true;
+  return params.routeMode === "project" || params.routeMode === "workspace";
+}
+```
+
+The orchestrator first checks if orchestration is even enabled. Then it runs intent classification. If the classification says "this is simple" or confidence is low, it falls back to legacy. Only when the stars align does the full multi-agent pipeline activate.
+
+---
+
+## 4. Intent Classification — What Does the User Want?
+
+**File:** `backend/src/lib/orchestrator/planner/intentClassifier.ts` (370 lines)
+
+Intent classification is the **gatekeeper**. It decides whether a request should be handled by the simple legacy system or the full multi-agent orchestrator.
+
+### 4.1 Classification Categories
+
+| Category | Meaning | Example |
+|----------|---------|---------|
+| `simple` | Single-step, no specialist needed | "What is force majeure?" |
+| `complex` | 2-3 sequential steps, may need specialists | "Draft an NDA and check it for compliance" |
+| `multi_agent` | Multiple parallel workstreams | "Research case law on NDAs, then draft one, then check compliance" |
+
+### 4.2 Legal Domain Detection
+
+The classifier detects which area of law the request touches:
+
+| Domain | Triggers |
+|--------|----------|
+| `contract_drafting` | draft, create, generate, prepare, write, NDA, contract, agreement, notice, letter, policy |
+| `compliance_check` | compliance, GDPR, DPDP, regulation, regulatory, privacy |
+| `legal_research` | case law, statute, precedent, research, source, authority |
+| `document_review` | review, redline, analyze, clause, agreement, contract, document, DDR, due diligence, VDR |
+| `template_fill` | template, field, wizard, fill |
+| `general_legal` | law, legal, court, jurisdiction, liability, obligation, right |
+| `non_legal` | (none of the above) |
+
+### 4.3 The Heuristic + LLM Hybrid
+
+Classification uses a **two-tier approach**:
+
+1. **Heuristic pass** (fast, free): Pattern-matching on the user message. Counts action verbs ("draft", "research", "check"), detects connector words ("and then", "also", "additionally"), and identifies document type patterns (NDA, DPA, DDR, etc.).
+
+2. **LLM pass** (slower, costs tokens): If heuristics can't reach 70% confidence, the system sends the message to an LLM with a classification prompt. The LLM returns structured JSON with category, confidence, reasoning, and suggested agents.
+
+```typescript
+// Simplified classification flow
+const heuristic = classifyWithHeuristics(message);
+if (heuristic.confidence >= 0.7) return heuristic;  // Fast path
+
+// Slow path: ask the LLM
+const llmResult = await completeText({ ... });
+return enrichClassification(message, llmResult);
+```
+
+### 4.4 Confidence Scoring
+
+Confidence ranges from 0.0 to 1.0:
+
+| Range | Action |
+|-------|--------|
+| ≥ 0.70 | Use classification directly (no LLM call) |
+| 0.65 – 0.69 | Orchestrator proceeds but with caution |
+| < 0.65 | Fall back to legacy chat orchestrator |
+
+### 4.5 Connector and Sandbox Detection
+
+The classifier also detects whether external services or sandbox execution are needed:
+
+- **External connectors:** email, Google Analytics, Apollo CRM, Meta Ads
+- **Sandbox execution:** Python interpreter, code execution, charts, graphs, visualizations, React components
+
+### 4.6 Caching
+
+Classifications are cached for 5 minutes with a 500-entry LRU cache. The cache key is an MD5 hash of the first 200 characters of the user message. This prevents redundant LLM calls for repeated or similar queries.
+
+---
+
+## 5. Task Planning — Breaking Down Complex Requests
+
+**File:** `backend/src/lib/orchestrator/planner/taskPlanner.ts` (218 lines)
+**Schema:** `backend/src/lib/orchestrator/planner/taskSchema.ts` (54 lines)
+
+Once intent classification says "this needs orchestration," the task planner takes over. Its job is to decompose the user's request into concrete, executable sub-tasks.
+
+### 5.1 The Task Schema
+
+Every task has this structure:
+
+```typescript
+interface Task {
+  id: string;                    // "task-1", "task-2", etc.
+  title: string;                 // Human-readable title
+  description: string;           // What the agent should do
+  agentType: "research" | "document" | "compliance" | "drafting" | "generic";
+  priority: "critical" | "high" | "medium" | "low";
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
+  dependencies: Array<{
+    taskId: string;
+    type: "sequential" | "parallel" | "optional";
+  }>;
+  toolsNeeded: string[];         // Which tools this task requires
+  legalContext: {
+    domain: string;
+    documentType?: string;
+    jurisdiction?: string;
+  };
+  estimatedTokens: number;
+  outputKey: string;             // Key for sharing results between tasks
+  inputKeys: string[];           // Which previous task outputs this task needs
+  retryCount: number;
+  maxRetries: number;            // Default: 2
+}
+```
+
+### 5.2 Planning Rules
+
+The task planner LLM follows strict rules:
+
+1. **Research always happens BEFORE drafting** when facts are needed
+2. **Compliance checks happen AFTER document creation**
+3. **Maximum 6 tasks per plan**
+4. **Only use tools that are actually available** in the tool registry
+5. **Legal context must specify a valid domain** from the LegalDomain enum
+6. **Mark tasks parallel ONLY if they have no data dependency**
+7. **Estimated token budgets:** research=1500, drafting=3000, compliance=2000, review=1500
+
+### 5.3 Dependency Detection
+
+Dependencies are critical. If the user says "research X, then draft Y," the planner must:
+
+- Create Task 1: Research X (no dependencies)
+- Create Task 2: Draft Y (depends on Task 1 — sequential dependency)
+
+The planner outputs a `TaskPlan` with an `executionStrategy`:
+
+| Strategy | Meaning |
+|----------|---------|
+| `sequential` | Tasks run one after another, each waiting for the previous |
+| `parallel` | All tasks run simultaneously |
+| `mixed` | Some parallel, some sequential (based on dependency graph) |
+
+### 5.4 Topological Sorting
+
+Before execution, tasks are topologically sorted to respect dependencies. Tasks with no dependencies run first. Tasks that depend on completed tasks wait in a queue. The coordinator picks up ready tasks as dependencies complete.
+
+### 5.5 Fallback Plans
+
+If the LLM planner fails (timeout, invalid JSON, schema validation error), the system generates a **fallback plan** based on heuristics:
+
+```typescript
+// Simplified fallback logic
+if (agents.length > 1) {
+  // Multi-agent: create one task per agent, sequentially dependent
+  for (const agentType of agents) {
+    tasks.push({ id: `task-${i}`, agentType, dependencies: [previous task] });
+  }
+} else {
+  // Single-agent: one task
+  tasks.push({ id: "task-1", agentType: agents[0] });
+}
+```
+
+### 5.6 Statutory Form Optimization
+
+The planner has special handling for known statutory forms (Form INC-22A/ACTIVE, MGT, AOC, DIR, PAS, SH, CHG, ADT, DPT, MSME, FC-GPR, FC-TRS). When the user asks to draft one of these forms without requesting current law research, the planner **skips the research step** and goes directly to drafting.
+
+---
+
+## 6. Agent Coordination — Who Does What
+
+**File:** `backend/src/lib/orchestrator/agents/agentCoordinator.ts` (187 lines)
+
+The agent coordinator is the **project manager** that dispatches tasks to the right agents and manages the execution loop.
+
+### 6.1 The Agent Registry
+
+```typescript
+private agents: Map<AgentType, BaseAgent> = new Map([
+  ["research", researchAgent],
+  ["document", documentAgent],
+  ["compliance", complianceAgent],
+  ["drafting", draftingAgent],
+  ["generic", genericAgent],
+]);
+```
+
+### 6.2 The Execution Loop
+
+```
+while (completed + failed < total tasks):
+    readyTasks = getReadyTasks()  // Tasks whose dependencies are met
+    if no readyTasks: break
+    
+    if strategy == "sequential":
+        batch = readyTasks[0]  // Only one at a time
+    else:
+        batch = readyTasks  // All ready tasks in parallel
+    
+    results = Promise.allSettled(batch.map(executeTask))
+    
+    for result in results:
+        if success: mark complete, store output in sharedContext
+        if failed: retry (up to maxRetries), then mark failed
+        if critical task failed: abort entire pipeline
+```
+
+### 6.3 Agent Types and Their Roles
+
+| Agent | Purpose | Allowed Tools |
+|-------|---------|---------------|
+| **Research Agent** | Find case law, statutes, regulations, legal precedents | search_web, search_sources, read_document, fetch_documents, list_documents, search_clause_library |
+| **Document Agent** | Review, compare, and analyze documents | read_document, compare_documents, extract_clauses, find_in_document, fetch_documents, list_documents |
+| **Compliance Agent** | Check documents/practices against regulations | search_web, search_sources, read_document, compare_documents, extract_clauses, find_in_document |
+| **Drafting Agent** | Draft, revise, and redline legal documents | generate_docx, generate_xlsx, generate_pptx, edit_document, sandboxExec, pythonInterpreter, search_templates, fill_and_create, legal_draft_consistency_check |
+| **Generic Agent** | Handle single-step requests (fallback) | (no tools — uses context only) |
+
+### 6.4 Shared Context
+
+Agents communicate through a **shared context** map. When Task 1 completes, its output is stored under its `outputKey` (e.g., `task_1_output`). When Task 2 runs, it receives the shared context and can access Task 1's output via its `inputKeys`.
+
+```typescript
+// Agent sees this in its system prompt:
+"Context from other completed tasks:
+{
+  "task_1_output": { ... research findings ... }
+}"
+```
+
+### 6.5 Agent Execution Flow
+
+Each agent follows the same pattern (defined in `BaseAgent.execute()`):
+
+1. Emit `agent_start` SSE event
+2. Build memory context for the user
+3. Filter allowed tools based on permissions
+4. Build the agent's system prompt (with Legal Safety Contract)
+5. Call `streamChatWithTools()` — the LLM can call tools during generation
+6. Collect tool results and return `AgentResult`
+
+### 6.6 Timeout Handling
+
+Each agent has a 90-second timeout. If an agent exceeds this, it is marked as failed. The task coordinator can retry it (up to `maxRetries` times). If a **critical** priority task fails after all retries, the entire orchestration pipeline aborts.
+
+---
+
+## 7. Tool Selection — Picking the Right Tools
+
+**Files:**
+- `backend/src/lib/chatTools.ts` (10,147 lines) — 50+ tool definitions
+- `backend/src/lib/tools/executors.ts` (1,970 lines) — tool executor implementations
+- `backend/src/lib/tools/toolSchemas.ts` (1,146 lines) — tool schemas
+- `backend/src/lib/orchestrator/tools/` — orchestrator-specific tool handlers
+- `backend/src/lib/agentic/toolManifest.ts` (196 lines) — tool manifest with risk levels
+
+### 7.1 Tool Categories
+
+| Category | Tools | Risk Level |
+|----------|-------|------------|
+| **Search** | search_web, search_sources, searchDocuments, workspaceRagRetrieve | Low |
+| **Document** | read_document, fetch_documents, list_documents, find_in_document, compare_documents, extract_clauses | Low |
+| **Drafting** | generate_docx, generate_xlsx, generate_pptx, edit_document, insert_content, replicate_document | **High** |
+| **Template** | search_templates, fill_and_create, extract_placeholders, set_placeholder_value, fill_placeholders | Medium |
+| **Compliance** | legal_draft_consistency_check, search_clause_library | Medium |
+| **Sandbox** | sandboxExec, pythonInterpreter, sandboxReadFile, sandboxWriteFile, sandboxEditFile | **High** |
+| **Workspace** | create_project, create_workspace, move_to_workspace, move_file | **High** |
+| **Email** | email, emailDraft | **High** |
+| **Human Loop** | human.ask_question | Low |
+
+### 7.2 Risk Levels and Confirmation
+
+From the tool manifest:
+
+| Risk Level | Requires Confirmation | Examples |
+|------------|----------------------|----------|
+| **Low** | No | Matter Scan, Document Classification, Monitor Scan, Human Question |
+| **Medium** | No | Tabular Review, List Extraction, Chronology Extraction, Gap Analysis |
+| **High** | **Yes** | Redline Editing, Report Drafting |
+
+Tools marked `requiresConfirmation: true` trigger the human-in-the-loop system before execution.
+
+### 7.3 Tool Dependencies
+
+The intent classifier suggests tools based on the user's message. The task planner assigns specific tools to each task. The agent executor filters tools based on:
+
+1. **Agent type** — each agent has an explicit allowlist
+2. **Permissions** — read-only users cannot access mutating tools
+3. **Scope** — project tools require a project ID, workspace tools require a workspace ID
+
+### 7.4 Mutating Tool Protection
+
+A hardcoded set of mutating tools is defined in `BaseAgent`:
+
+```typescript
+const MUTATING_TOOL_NAMES = new Set([
+  "create_project", "create_workspace", "move_to_workspace", "move_file",
+  "generate_docx", "edit_document", "insert_content", "replicate_document",
+  "fill_and_create", "start_document_wizard", "set_placeholder_value",
+  "fill_placeholders", "create_document", "workspaceTask", "workspaceMembers",
+  "workspace_add_item", "email", "emailDraft", "sandboxExec",
+  "pythonInterpreter", "sandboxWriteFile", "sandboxEditFile",
+]);
+```
+
+If a user has `canWrite: false`, these tools are automatically stripped from the agent's available tools.
+
+### 7.5 Idempotency
+
+The planner enforces idempotency rules. Before executing any tool, it computes a signature from `tool_name + doc_id_or_command + input_hash`. If the same signature was already executed this turn, the cached result is returned instead of re-executing. This prevents duplicate document reads, duplicate sandbox executions, and duplicate document generation.
+
+---
+
+## 8. The Legal Safety Contract (LSC-V1)
+
+**File:** `backend/src/lib/agentic/prompts.ts` (972 lines)
+
+The Legal Safety Contract is the **constitution** of Mike's AI. It is a set of hard rules that every legal LLM call must follow. It cannot be overridden by user instructions.
+
+### 8.1 The 10 Hard Rules
+
+| Rule | Name | What It Prevents |
+|------|------|------------------|
+| **Rule 1** | Do not invent legal content | Citation fabrication, source misgrounding |
+| **Rule 2** | Every proposition must be sourced or labeled | Unsubstantiated legal claims |
+| **Rule 3** | Screen embedded premises before answering | Contra-factual bias |
+| **Rule 4** | Capture jurisdiction before jurisdiction-specific answers | Jurisdiction ambiguity |
+| **Rule 5** | Never substitute a different source when extraction fails | Source misgrounding |
+| **Rule 6** | State currentness explicitly | Temporal staleness |
+| **Rule 7** | Calibrate and express confidence accurately | Poor calibration |
+| **Rule 8** | Escalate to licensed counsel for high-stakes outputs | Unauthorized practice of law |
+| **Rule 9** | Protect confidentiality | Confidentiality breaches |
+| **Rule 10** | Surface conflicting authorities | Doctrinal reasoning errors |
+
+### 8.2 How It's Applied
+
+The Legal Safety Contract is **prepended to every legal LLM call**:
+
+```typescript
+export function prependLegalSafetyContract(prompt: string): string {
+  if (hasLegalSafetyContract(prompt)) return prompt;
+  return [LEGAL_SAFETY_CONTRACT_V1.prompt, prompt.trim()].filter(Boolean).join("\n\n");
+}
+```
+
+Every agent, the response generator, and the task planner all call this function before making LLM calls. There is also a guard function that **throws an error** if a legal tool is called without the contract present:
+
+```typescript
+export function assertLegalSafetyContractActive(prompt: string, toolName: string): void {
+  if (hasLegalSafetyContract(prompt)) return;
+  throw new Error(`[LSC-GUARD] Legal tool "${toolName}" called without Legal Safety Contract.`);
+}
+```
+
+### 8.3 Confidence Levels
+
+The contract defines four confidence levels:
+
+| Level | When to Use |
+|-------|-------------|
+| **HIGH** | Directly supported by a retrieved source document or verified legal database result |
+| **MEDIUM** | Synthesizes multiple sources, involves inferential reasoning, or generally settled with exceptions |
+| **LOW** | Partial/ambiguous sources, novel areas, or training knowledge rather than retrieved sources |
+| **ABSTAIN** | No source for a material proposition; cannot provide reliable background |
+
+### 8.4 Disclosure Texts
+
+The contract defines three disclosure formats:
+
+- **Session-start disclosure** — shown once at session start, cannot be suppressed
+- **Per-response short disclaimer** — appended to routine research outputs
+- **Per-response long disclaimer** — used for drafts, opinions, and high-stakes outputs
+
+### 8.5 Output Templates
+
+The contract defines structured output templates for:
+
+- Quick legal Q&A
+- Legal research memos
+- Contract/clause analysis
+- Compliance checks
+- Drafting support
+
+Each template includes mandatory metadata blocks (jurisdiction, currentness, confidence, source basis).
+
+---
+
+## 9. Self-Critique — Checking Its Own Work
+
+**File:** `backend/src/lib/orchestrator/critique/selfCritiqueAgent.ts` (72 lines)
+
+After the response generator produces a draft, the system checks whether it needs **self-critique**. This happens when:
+
+```typescript
+if (validation.severity === "error" || validation.issues.length >= 2) {
+  critiqueResult = await selfCritiqueAgent.critique({ ... });
+}
+```
+
+### 9.1 What the Critique Agent Does
+
+The critique agent is a separate LLM call with a "senior legal AI quality reviewer" persona. It reviews the draft against a checklist:
+
+1. Does the answer actually address the question?
+2. Are cited authorities verified against agent outputs?
+3. Are jurisdiction caveats included where needed?
+4. Is legal language precise?
+5. Is the distinction between legal information and legal advice clear?
+6. Are next steps clearly stated?
+
+### 9.2 Critique Output
+
+```typescript
+interface CritiqueResult {
+  revisedResponse: string;        // The improved response
+  changesMade: string[];          // What was changed
+  confidenceInRevision: number;   // How confident the critique agent is
+  skipRevision: boolean;          // Whether to use the original instead
+  legalCaveatsAdded: string[];    // Caveats that were added
+}
+```
+
+### 9.3 Timeout and Fallback
+
+The critique agent has an 8-second timeout. If it times out or fails, the system returns the original draft unchanged (`skipRevision: true`). This ensures the system never gets stuck on self-critique.
+
+---
+
+## 10. Output Validation — Making Sure It's Good Enough
+
+**File:** `backend/src/lib/orchestrator/validator/outputValidator.ts` (99 lines)
+
+The output validator runs **two validation passes**: one on individual tool outputs, and one on the final synthesized response.
+
+### 10.1 Tool Output Validation
+
+Checks each tool's output for common failures:
+
+| Tool | Check | Severity |
+|------|-------|----------|
+| `read_document` | Content is not empty | Error |
+| `search_web` / `search_sources` | Results array is not empty | Warning (medium legal risk) |
+| `generate_docx` | File ID is present | Error |
+| `edit_document` | Success flag is true | Error |
+
+### 10.2 Response Validation
+
+The `validateLegalResponse()` method checks the final synthesized response against these rules:
+
+| Code | Check | Severity |
+|------|-------|----------|
+| `UNHELPFUL_REFUSAL` | Response refuses without providing useful info | Error |
+| `DOCUMENT_CLAIM_WITHOUT_TOOL_OUTPUT` | Claims document creation without matching tool output | Error |
+| `MISSING_JURISDICTION_CAVEAT` | Absolute legal statement without jurisdiction caveat | Warning (medium risk) |
+| `UNVERIFIED_CITATION` | Cites authority not present in agent outputs | Warning (high risk) |
+| `TEMPLATE_PLACEHOLDER_LEAKED` | Contains unresolved [INSERT/TBD/TODO] placeholders | Error |
+| `RESPONSE_TOO_SHORT` | Complex response is too short (< 50 words) | Error |
+
+### 10.3 Retry Mechanism
+
+When validation fails:
+
+1. If severity is `error` OR there are 2+ issues → trigger self-critique
+2. Self-critique produces a `revisedResponse`
+3. If critique confidence is high and `skipRevision` is false → use the revised response
+4. Otherwise → use the original draft
+
+---
+
+## 11. Response Synthesis — Putting It All Together
+
+**File:** `backend/src/lib/orchestrator/response/responseGenerator.ts` (62 lines)
+
+The response generator takes all agent outputs and combines them into one coherent, professional response.
+
+### 11.1 Synthesis Rules
+
+The system prompt enforces these critical rules:
+
+1. **Address the original request** — the response must directly deliver what the user asked for
+2. **Consolidate into one response** — if multiple agents produced overlapping content, merge them. "NDA summary and compliance checklist" = ONE document with sections, not 3 separate docs.
+3. **Default to plain prose** — no markdown unless the content is a document/file or the user explicitly asked for a list/table
+4. **Quality of citations** — include actual legal reasoning, not just case names
+5. **Source preservation** — preserve inline citation markers, evidence IDs, and source URLs from agent outputs. Never invent new citations.
+6. **Document type validation** — if the user requested specific document types, verify that created documents match
+
+### 11.2 Citation Extraction
+
+Before streaming the response, the orchestrator extracts citations from all agent outputs:
+
+```typescript
+function collectOrchestrationCitations(coordinatorResult): Record<string, unknown>[] {
+  // Walks through all completed tasks
+  // Extracts <CITATIONS> blocks and inline citation objects
+  // Deduplicates by evidence_id + source_id + ref + quote
+  // Returns clean citation list
+}
+```
+
+Citations are streamed to the UI as a separate SSE event, enabling the frontend to render them as clickable references.
+
+### 11.3 Streaming
+
+The final response is streamed to the user via SSE events:
+
+1. `content_delta` — the response text
+2. `citations` — extracted citation references
+3. `[DONE]` — stream termination
+
+The response is also persisted to the database as a JSON array of events, including an `orchestration_summary` with metadata about the entire pipeline run.
+
+---
+
+## 12. Memory — What the AI Remembers
+
+**File:** `backend/src/lib/orchestrator/memory/memoryLayer.ts` (250 lines)
+
+Mike has a **three-tier memory system**:
+
+### 12.1 Session Memory (In-Memory)
+
+- Lives in a `Map<string, unknown>` per chat session
+- Cleared when the session ends
+- Used for short-lived state like artifact ownership tracking and idempotency signatures
+
+```typescript
+memoryLayer.setSession(chatId, "artifact_key", value);
+memoryLayer.getSession(chatId, "artifact_key");
+memoryLayer.clearSession(chatId);
+```
+
+### 12.2 Persistent Memory (Database)
+
+- Stored in the `userMemories` database table
+- Key-value store per user with type, confidence, expiration, and source tracking
+- Types: `preference`, `legal_pattern`
+
+**Examples of what's stored:**
+
+| Key | Type | Value | Confidence |
+|-----|------|-------|------------|
+| `preference:response_style` | preference | `"concise"` | 0.8 |
+| `preference:jurisdiction` | preference | `"california"` | 0.7 |
+| `legal_pattern:domain:contract_drafting` | legal_pattern | `{ domain, lastUsed, useCount }` | 0.9 |
+
+### 12.3 Conversation Context (Database)
+
+- Stored in the `conversationContext` table
+- Per-chat context with:
+  - `shortTermMemory` — arbitrary key-value pairs
+  - `legalEntities` — entities mentioned in the conversation
+  - `documentReferences` — documents referenced
+  - `taskHistory` — which agents ran and their outcomes
+  - `activeJurisdiction` — the jurisdiction for this conversation
+
+### 12.4 Memory Usage in Orchestration
+
+Before each orchestration run, the system builds a memory context string:
+
+```typescript
+const memoryContext = await memoryLayer.buildMemoryContext(userId, chatId);
+```
+
+This string is injected into agent system prompts, giving agents access to user preferences, legal patterns, and conversation history without requiring them to re-derive this information.
+
+---
+
+## 13. Human-in-the-Loop — When the AI Asks for Help
+
+**File:** `backend/src/lib/agentic/humanLoop.ts` (111 lines)
+
+Mike has a sophisticated human-in-the-loop system that pauses execution when the AI needs human input.
+
+### 13.1 Types of Human Loop Events
+
+| Type | Purpose |
+|------|---------|
+| **Approval Required** | Plan approval before execution |
+| **Clarifying Question** | Free text, single choice, multi choice, or confirmation |
+| **File Request** | Need a document from the user |
+| **Blocking Question** | Must be answered before execution continues |
+
+### 13.2 Approval Flow
+
+```
+AI generates plan
+    │
+    ▼
+approval_required SSE event
+    │
+    ▼
+User sees approval prompt in UI
+    │
+    ├─→ [Approve] → execution continues
+    ├─→ [Changes Requested] → AI revises plan
+    └─→ [Reject] → execution cancelled
+```
+
+### 13.3 Clarification Flow
+
+```
+AI encounters ambiguity
+    │
+    ▼
+question_required SSE event
+    │
+    ▼
+User answers in UI (free text or multiple choice)
+    │
+    ▼
+AI continues with the answer
+```
+
+### 13.4 The Agentic Event System
+
+**File:** `backend/src/lib/agentic/events.ts` (145 lines)
+
+The event system defines 13 SSE event types that communicate progress from the AI to the UI:
+
+| Event | Meaning |
+|-------|---------|
+| `thinking_delta` | AI is generating thinking text |
+| `plan_ready` | A plan has been generated |
+| `approval_required` | Waiting for user approval |
+| `question_required` | Waiting for user answer |
+| `phase_start` | A new phase is starting |
+| `subagent_start` | A sub-agent has started work |
+| `subagent_done` | A sub-agent has finished |
+| `tool_start` | A tool is being called |
+| `tool_done` | A tool call has completed |
+| `artifact_ready` | An artifact has been generated |
+| `draft_ready` | A draft is ready for review |
+| `agent_error` | An error occurred |
+
+---
+
+## 14. Learning — Getting Better Over Time
+
+**File:** `backend/src/lib/orchestrator/learning/learningSystem.ts` (110 lines)
+
+The learning system observes orchestration runs and extracts patterns to improve future interactions.
+
+### 14.1 What Gets Learned
+
+| Trigger | What's Stored | Confidence |
+|---------|---------------|------------|
+| User says "brief", "quick", "summary" | `preference:response_style = "concise"` | 0.8 |
+| Research agent succeeds | `legal_pattern:domain:{domain}` with usage stats | 0.9 |
+| User mentions a jurisdiction | `preference:jurisdiction = "{jurisdiction}"` | 0.7 |
+| Positive feedback from user | Confidence boost (+0.05) on related memories | — |
+
+### 14.2 Learning Events
+
+Every orchestration run triggers `learningSystem.extractFromRun()` which:
+
+1. Detects response style preferences from query language
+2. Records successful legal domain patterns
+3. Extracts jurisdiction preferences
+4. Saves conversation context with task history
+
+### 14.3 User Feedback
+
+The system records positive/negative feedback per message:
+
+```typescript
+learningSystem.recordFeedback({
+  userId, chatId, messageId,
+  feedback: "positive" | "negative",
+  messageContent, userQuery,
+});
+```
+
+Positive feedback boosts the confidence of related memories. Negative feedback is recorded for analysis but does not reduce confidence.
+
+### 14.4 Learned Context in Future Runs
+
+Before each orchestration run, the system calls `getLearnedContext(userId)` which returns a string like:
+
+```
+User preferences:
+- Response style preference: concise
+- Frequently works in: california jurisdiction
+- Legal pattern: domain:contract_drafting
+```
+
+This is injected into agent prompts, making the system adapt to each user over time.
+
+---
+
+## 15. Error Handling — When Things Go Wrong
+
+### 15.1 LLM Failures
+
+| Scenario | Handling |
+|----------|----------|
+| LLM call times out | `withTimeout()` rejects with descriptive error; falls back to legacy |
+| LLM returns invalid JSON | Parser catches error; retry with validation error context; fallback plan |
+| LLM returns schema-invalid plan | Zod validation catches error; retry once; fallback plan |
+| Rate limit exceeded | Check before orchestration; fall back to legacy if exceeded |
+
+### 15.2 Agent Failures
+
+| Scenario | Handling |
+|----------|----------|
+| Agent times out (90s) | Mark task as failed; retry up to `maxRetries` times |
+| Agent throws exception | Catch in `executeTask()`; mark as failed; retry |
+| Critical task fails after retries | **Abort entire pipeline** immediately |
+| Non-critical task fails | Continue with remaining tasks; note failure in results |
+
+### 15.3 Pipeline-Level Fallback
+
+The orchestrator has a **three-level fallback**:
+
+```typescript
+try {
+  await this.runOrchestrated(params);
+} catch (error) {
+  // Level 1: Orchestration failed
+  emitSse(write, { type: "orchestration_fallback", reason: error.message });
+  try {
+    // Level 2: Try legacy orchestrator
+    const legacyResult = await this.legacy.handle({ ...params, skipUserPersistence: true });
+    await legacyResult.stream(write);
+  } catch (fallbackError) {
+    // Level 3: Both failed
+    emitSse(write, { type: "error", message: "Both orchestration and fallback failed." });
+    write("data: [DONE]\n\n");
+  }
+}
+```
+
+### 15.4 Timeout Budgets
+
+| Component | Timeout |
+|-----------|---------|
+| Total orchestration | 180 seconds |
+| Task planning | 45 seconds |
+| Agent execution (per agent) | 90 seconds |
+| Response synthesis | 45 seconds |
+| Self-critique | 8 seconds |
+
+### 15.5 Rate Limiting
+
+Orchestration has per-user rate limiting. If exceeded, the system silently falls back to the legacy chat path. The user sees no error — they just get a simpler response.
+
+---
+
+## 16. The Complete Flow Diagram
+
+Here is the complete flow from user input to final response, showing every component:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        USER TYPES MESSAGE                           │
+└─────────────────────────────┬───────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  orchestratorPipeline.run(params)                                   │
+│  File: backend/src/lib/orchestrator/index.ts:180                    │
+│                                                                     │
+│  1. Check: shouldConsiderOrchestration()?                           │
+│     - PRISM_ORCHESTRATION_ENABLED env var                           │
+│     - params.orchestrationEnabled flag                              │
+│     - params.routeMode (project/workspace)                          │
+│     → If NO: return legacy.handle(params)                           │
+│                                                                     │
+│  2. detectIntent(lastMessage) — legacy intent check                 │
+│     → If fill_template_field: return legacy.handle(params)          │
+│                                                                     │
+│  3. getUserApiKeys(userId)                                          │
+│                                                                     │
+│  4. classifyIntent(lastMessage, messages, apiKeys)                  │
+│     File: backend/src/lib/orchestrator/planner/intentClassifier.ts  │
+│     - Heuristic pass (pattern matching)                             │
+│     - LLM pass (if heuristic confidence < 0.7)                      │
+│     - Returns: category, confidence, domain, agents, tools          │
+│                                                                     │
+│  5. Decision: shouldOrchestrate?                                    │
+│     - category in [complex, multi_agent] AND confidence > 0.65      │
+│     → If NO: return legacy.handle(params)                           │
+│                                                                     │
+│  6. checkOrchestrationRateLimit(userId)                             │
+│     → If exceeded: return legacy.handle(params)                     │
+│                                                                     │
+│  7. recordOrchestrationRequest(userId)                              │
+│                                                                     │
+│  8. legacy.prepareContext(params)                                    │
+│     - Assembles assistant runtime context                           │
+│     - Builds context summary                                        │
+└─────────────────────────────┬───────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  runOrchestrated(params) — streaming phase                          │
+│                                                                     │
+│  PHASE 1: TASK PLANNING (timeout: 45s)                             │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ memoryLayer.buildMemoryContext(userId, chatId)               │    │
+│  │ createTaskPlan({                                            │    │
+│  │   userMessage, conversationHistory, intentClassification,  │    │
+│  │   assembledContext, availableTools, apiKeys                 │    │
+│  │ })                                                          │    │
+│  │ File: backend/src/lib/orchestrator/planner/taskPlanner.ts   │    │
+│  │ - Sends planning prompt to LLM                              │    │
+│  │ - Parses JSON response into TaskPlan schema                 │    │
+│  │ - Falls back to heuristic plan on failure                   │    │
+│  │ → SSE: plan_ready { taskCount, titles, legalDomain }        │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                              │                                      │
+│                              ▼                                      │
+│  PHASE 2: AGENT EXECUTION (timeout: 120s)                          │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ agentCoordinator.execute({ plan, ... })                     │    │
+│  │ File: backend/src/lib/orchestrator/agents/agentCoordinator  │    │
+│  │                                                              │    │
+│  │   Loop: while tasks remain                                   │    │
+│  │     getReadyTasks() — tasks with dependencies met            │    │
+│  │     For each ready task:                                     │    │
+│  │       ┌─────────────────────────────────────────────────┐    │    │
+│  │       │ executeTask(task, params)                        │    │    │
+│  │       │ - Look up agent by task.agentType                │    │    │
+│  │       │ - agent.execute(task, params)                    │    │    │
+│  │       │   - Build memory context                         │    │    │
+│  │       │   - Filter allowed tools                         │    │    │
+│  │       │   - Build system prompt with LSC-V1              │    │    │
+│  │       │   - streamChatWithTools() — LLM + tool calls     │    │    │
+│  │       │   - Collect results, return AgentResult          │    │    │
+│  │       │ - If success: store in sharedContext              │    │    │
+│  │       │ - If failed: retry up to maxRetries              │    │    │
+│  │       │ - If critical task fails: ABORT                  │    │    │
+│  │       └─────────────────────────────────────────────────┘    │    │
+│  │                                                              │    │
+│  │ → SSE: orchestration_start, agent_start, agent_progress,    │    │
+│  │        agent_tool_call, agent_complete, orchestration_complete│    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                              │                                      │
+│                              ▼                                      │
+│  PHASE 3: RESPONSE SYNTHESIS (timeout: 45s)                        │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ generateFinalResponse({                                     │    │
+│  │   originalQuery, coordinatorResult, memoryContext,          │    │
+│  │   requestedDocumentTypes, apiKeys                           │    │
+│  │ })                                                          │    │
+│  │ File: backend/src/lib/orchestrator/response/responseGen.ts  │    │
+│  │ - Combines all agent outputs into one prompt                │    │
+│  │ - Applies LSC-V1                                           │    │
+│  │ - Calls LLM to synthesize final response                   │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                              │                                      │
+│                              ▼                                      │
+│  PHASE 4: VALIDATION                                               │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ legalOutputValidator.validateLegalResponse({                │    │
+│  │   response, originalQuery, agentOutputs, legalDomain        │    │
+│  │ })                                                          │    │
+│  │ File: backend/src/lib/orchestrator/validator/outputVal.ts   │    │
+│  │ - Checks for unhelpful refusals                             │    │
+│  │ - Checks for unverified citations                           │    │
+│  │ - Checks for missing jurisdiction caveats                   │    │
+│  │ - Checks for template placeholder leaks                     │    │
+│  │ - Checks response length                                    │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                              │                                      │
+│                    ┌─────────┴─────────┐                            │
+│                    │                   │                            │
+│              severity==error      severity==pass                    │
+│              or issues >= 2            │                            │
+│                    │                   │                            │
+│                    ▼                   │                            │
+│  PHASE 5: SELF-CRITIQUE (optional)    │                            │
+│  ┌────────────────────────────────┐   │                            │
+│  │ selfCritiqueAgent.critique()   │   │                            │
+│  │ - Reviews draft against        │   │                            │
+│  │   quality checklist            │   │                            │
+│  │ - Produces revised response    │   │                            │
+│  │ - Timeout: 8 seconds           │   │                            │
+│  └────────────────────────────────┘   │                            │
+│                    │                   │                            │
+│                    └─────────┬─────────┘                            │
+│                              │                                      │
+│                              ▼                                      │
+│  PHASE 6: DELIVERY                                                 │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ - collectOrchestrationCitations()                           │    │
+│  │ - SSE: content_delta { text: finalResponse }                │    │
+│  │ - SSE: citations { citations: [...] }                       │    │
+│  │ - SSE: [DONE]                                               │    │
+│  │ - Persist to chatMessages table                             │    │
+│  │ - learningSystem.extractFromRun() (async, fire-and-forget)  │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                     │
+│  LOGGING: logOrchestration({ userId, chatId, classification, ... }) │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 17. Key Files Reference
+
+### Orchestrator Core
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `backend/src/lib/orchestrator/index.ts` | 488 | Main orchestrator pipeline — entry point |
+| `backend/src/lib/orchestrator/types.ts` | 117 | Core TypeScript types for orchestration |
+
+### Planning
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `backend/src/lib/orchestrator/planner/intentClassifier.ts` | 370 | Intent classification (heuristic + LLM) |
+| `backend/src/lib/orchestrator/planner/taskPlanner.ts` | 218 | Task plan creation from user message |
+| `backend/src/lib/orchestrator/planner/executionPlan.ts` | — | Execution plan generation |
+| `backend/src/lib/orchestrator/planner/taskSchema.ts` | 54 | Zod schemas for Task and TaskPlan |
+
+### Agents
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `backend/src/lib/orchestrator/agents/agentCoordinator.ts` | 187 | Agent coordination and execution loop |
+| `backend/src/lib/orchestrator/agents/baseAgent.ts` | 252 | Base agent class with shared execution logic |
+| `backend/src/lib/orchestrator/agents/researchAgent.ts` | 32 | Research specialist agent |
+| `backend/src/lib/orchestrator/agents/documentAgent.ts` | — | Document analysis agent |
+| `backend/src/lib/orchestrator/agents/complianceAgent.ts` | 25 | Compliance checking agent |
+| `backend/src/lib/orchestrator/agents/draftingAgent.ts` | 67 | Document drafting agent |
+| `backend/src/lib/orchestrator/agents/agentToolExecutor.ts` | — | Tool execution for agents |
+
+### Validation & Critique
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `backend/src/lib/orchestrator/critique/selfCritiqueAgent.ts` | 72 | Self-critique and response improvement |
+| `backend/src/lib/orchestrator/validator/outputValidator.ts` | 99 | Legal output validation rules |
+| `backend/src/lib/orchestrator/validator/responseValidator.ts` | 5 | Response validation (re-exports outputValidator) |
+
+### Response & Memory
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `backend/src/lib/orchestrator/response/responseGenerator.ts` | 62 | Final response synthesis from agent outputs |
+| `backend/src/lib/orchestrator/memory/memoryLayer.ts` | 250 | Three-tier memory system |
+| `backend/src/lib/orchestrator/learning/learningSystem.ts` | 110 | Learning from user feedback and patterns |
+
+### Agentic System
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `backend/src/lib/agentic/prompts.ts` | 972 | Legal Safety Contract (LSC-V1) |
+| `backend/src/lib/agentic/toolManifest.ts` | 196 | Tool manifest with risk levels |
+| `backend/src/lib/agentic/contextBuilder.ts` | — | Context assembly for agents |
+| `backend/src/lib/agentic/events.ts` | 145 | SSE event definitions |
+| `backend/src/lib/agentic/humanLoop.ts` | 111 | Human-in-the-loop types and flows |
+
+### Legacy System
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `backend/src/lib/chatOrchestrator.ts` | 4,145 | Legacy single-agent chat orchestrator |
+| `backend/src/lib/chatTools.ts` | 10,147 | 50+ AI tool definitions |
+| `backend/src/lib/tools/executors.ts` | 1,970 | Tool executor implementations |
+| `backend/src/lib/tools/toolSchemas.ts` | 1,146 | Tool JSON schemas |
+| `backend/src/prompts/promptBuilder.ts` | 547 | System prompt builder |
+
+### Background Agent System
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `backend/src/agent/agentPlanner.ts` | 247 | Background agent job planning |
+| `backend/src/agent/agentEventBus.ts` | — | Event bus for agent events |
+| `backend/src/agent/subAgentExecutor.ts` | — | Sub-agent execution |
+| `backend/src/agent/preliminaryAssessor.ts` | — | VDR structure assessment |
+| `backend/src/agent/reportAssembler.ts` | — | Report generation |
+| `backend/src/agent/artifactReducer.ts` | — | Artifact reduction |
+| `backend/src/agent/topologicalSort.ts` | — | Task dependency ordering |
+| `backend/src/queue/agentWorker.ts` | 534 | BullMQ worker for background agent jobs |
+
+### LLM Abstraction
+
+| File | Purpose |
+|------|---------|
+| `backend/src/lib/llm/` | LLM provider abstraction (model selection, API key management, streaming) |
+| `backend/src/lib/assistant-runtime/` | Assistant runtime context and configuration |
+
+---
+
+## Appendix A: SSE Event Reference
+
+All SSE events follow the format `data: {JSON}\n\n`. Here is the complete list:
+
+### Orchestrator-Level Events
+
+| Event Type | Payload | When |
+|------------|---------|------|
+| `chat_id` | `{ chatId }` | First event — establishes chat session |
+| `orchestration_thinking` | `{ message }` | Planning phase starts |
+| `plan_ready` | `{ taskCount, titles, legalDomain }` | Plan created |
+| `orchestration_start` | `{ taskCount }` | Agent execution begins |
+| `orchestration_complete` | `{ successCount, failedCount }` | Agent execution ends |
+| `orchestration_fallback` | `{ reason }` | Falling back to legacy |
+| `content_delta` | `{ text }` | Response text streaming |
+| `citations` | `{ citations, source_status }` | Citation references |
+
+### Agent-Level Events
+
+| Event Type | Payload | When |
+|------------|---------|------|
+| `agent_start` | `{ agentType, taskTitle }` | Agent begins work |
+| `agent_progress` | `{ agentType, message }` | Agent status update |
+| `agent_tool_call` | `{ agentType, toolName }` | Agent calls a tool |
+| `agent_complete` | `{ agentType, success, durationMs, toolsUsed }` | Agent finishes |
+
+---
+
+## Appendix B: Configuration Reference
+
+### Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PRISM_ORCHESTRATION_ENABLED` | — | Set to `"false"` to disable new orchestrator |
+| `AGENT_DEBUG_ENABLED` | — | Set to `"true"` to enable debug logging to external endpoint |
+
+### Timeout Constants (from `orchestrator/index.ts`)
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `ORCHESTRATION_TIMEOUT_MS` | 180,000 (3 min) | Total pipeline timeout |
+| `PLAN_TIMEOUT_MS` | 45,000 (45 sec) | Task planning timeout |
+| `AGENTS_TIMEOUT_MS` | 120,000 (2 min) | Agent execution timeout |
+| `SYNTHESIS_TIMEOUT_MS` | 45,000 (45 sec) | Response synthesis timeout |
+| `AGENT_TIMEOUT_MS` | 90,000 (90 sec) | Per-agent timeout (in coordinator) |
+
+### Classification Thresholds
+
+| Threshold | Value | Purpose |
+|-----------|-------|---------|
+| Orchestration confidence gate | 0.65 | Below this → legacy |
+| Heuristic fast-path gate | 0.70 | Above this → skip LLM classification |
+| Cache TTL | 5 min | Classification cache lifetime |
+| Cache max size | 500 | LRU eviction threshold |
+
+---
+
+*This document is the definitive guide to Mike's AI orchestration architecture. For questions or updates, contact the platform engineering team.*
