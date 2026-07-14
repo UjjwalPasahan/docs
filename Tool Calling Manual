@@ -1,0 +1,2874 @@
+# Tool Calling Manual
+
+## 1. What This Document Is
+
+This document is the encyclopedia of every tool the Mike AI can use. Think of it as the instruction manual for all the superpowers the AI assistant has at its disposal. When you ask the AI to do something—like search for a document, analyze a contract, draft an email, or create a presentation—the AI uses these tools to get the job done.
+
+Each tool is like a specialized worker in a factory. Some tools search through files, some analyze legal documents, some create new documents, and some connect to external services. The AI picks the right tool for each job, much like a manager would assign tasks to the right team members.
+
+This manual covers 50+ tools across 15 categories, explaining what each tool does, when to use it, what can go wrong, and how it fits into the bigger picture.
+
+---
+
+## 2. How Tool Calling Works - The Basics
+
+Tool calling is how the AI interacts with the real world. Here's the step-by-step process:
+
+### The Tool Calling Cycle
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. USER MESSAGE                                            │
+│     "Find me all contracts mentioning indemnity clauses"    │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  2. AI DECIDES WHICH TOOLS TO CALL                          │
+│     AI thinks: "I need to searchDocuments with query       │
+│     'indemnity clauses'"                                    │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  3. AI GENERATES TOOL CALLS                                 │
+│     {                                                       │
+│       "name": "searchDocuments",                            │
+│       "arguments": {                                        │
+│         "query": "indemnity clauses",                       │
+│         "topK": 10                                          │
+│       }                                                     │
+│     }                                                       │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  4. BACKEND EXECUTES THE TOOL                               │
+│     - Validates parameters                                  │
+│     - Runs the search against indexed documents             │
+│     - Returns results with passages and scores              │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  5. RESULTS RETURNED TO AI                                  │
+│     {                                                       │
+│       "success": true,                                      │
+│       "results": [...passages...],                          │
+│       "count": 5                                            │
+│     }                                                       │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  6. AI FORMS RESPONSE                                       │
+│     "I found 5 contracts mentioning indemnity clauses..."   │
+│     Uses the tool results to give a useful answer.          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Concepts
+
+- **Tool Call**: A request from the AI to execute a specific function with specific parameters
+- **Parameters**: The inputs the tool needs (like a search query, document ID, or email address)
+- **Result**: What the tool sends back (success/failure, data, error messages)
+- **Parallel Calls**: The AI can call multiple tools at once if they don't depend on each other
+- **Sequential Calls**: Some tools must wait for others to finish first
+
+### Example Flow
+
+```
+User: "Compare my NDA with the counterparty's version and suggest changes"
+
+AI calls: compare_documents(doc_id_a="doc-123", doc_id_b="doc-456")
+    ↓ waits for result
+AI calls: negotiation_support(doc_id="doc-123", our_party="our company", counterparty_doc_id="doc-456")
+    ↓ waits for result
+AI responds with comparison analysis and negotiation suggestions
+```
+
+---
+
+## 3. Tool Categories Overview
+
+| Category | Count | Purpose | Risk Level Range |
+|----------|-------|---------|------------------|
+| Search Tools | 6 | Finding information in documents, files, and the web | Low |
+| Document Tools | 15+ | Reading, creating, editing, and comparing documents | Low-Medium |
+| Legal Analysis Tools | 12 | Understanding law, compliance, and risk | Low-Medium |
+| Generation Tools | 4 | Creating presentations, spreadsheets, and running code | Medium |
+| Email Tools | 2 | Reading, drafting, and managing email | Medium |
+| Workspace Tools | 3 | Project management and organization | Medium |
+| Task Tools | 2 | Managing tasks and team members | Low-Medium |
+| Workflow Tools | 2 | Reading and listing automated workflows | Low |
+| File Tools | 2 | Moving and redlining files | Low-Medium |
+| External Tools | 2 | Connecting to web and stock data | Low |
+| Sandbox Tools | 7 | Code execution and file operations in secure environment | Low-Medium |
+| Agentic Tools | 11 | Advanced AI operations for complex legal tasks | Low-High |
+| SuperDoc Tools | 9 | Native DOCX document operations | Low-Medium |
+| Connector Tools | 1 | Email service integration | Medium |
+| Unified Tools | 7 | Sandbox-based document and code operations | Medium |
+
+**Total: 50+ distinct tools**
+
+---
+
+## 4. Search Tools - Finding Information
+
+Search tools help the AI find information across your documents, files, and the internet. They are the foundation of most interactions.
+
+### 4.1 searchDocuments
+
+**Purpose**: Semantic search through your personal indexed documents by content. This is the primary way the AI finds information in your uploaded and drive documents.
+
+**Input Parameters**:
+```json
+{
+  "query": "indemnity clause limitations",
+  "topK": 10,
+  "title": "Searching for indemnity clauses"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| query | string | Yes | Natural language search query |
+| topK | integer | No | Number of results (1-50, default: 5) |
+| title | string | No | Progress title shown to user |
+
+**Output**:
+```json
+{
+  "success": true,
+  "query": "indemnity clause limitations",
+  "results": [
+    {
+      "passage": "The indemnity clause shall be limited to...",
+      "document_id": "doc-123",
+      "filename": "Contract_v2.docx",
+      "score": 0.89,
+      "page": 5
+    }
+  ],
+  "count": 5
+}
+```
+
+**When to Use**:
+- User asks about document contents
+- Looking for specific clauses or terms
+- Finding uploaded or drive documents
+- Researching across multiple documents
+
+**When NOT to Use**:
+- Searching by filename only (use searchFilesByName)
+- Searching workspace documents in workspace context (use workspaceRagRetrieve)
+- Searching the internet (use webSearch)
+
+**Example Usage**:
+```
+User: "What does our contract say about liability caps?"
+AI: calls searchDocuments({ query: "liability cap limitations", topK: 5 })
+```
+
+**Failure Modes**:
+- No indexed documents found
+- Query too vague, returns irrelevant results
+- Document not yet indexed (still processing)
+- Returns empty results if no matches
+
+---
+
+### 4.2 searchFilesByName
+
+**Purpose**: Search existing drive files and documents by filename only, not by content. Use when the user names a known file.
+
+**Input Parameters**:
+```json
+{
+  "query": "NDA",
+  "mimeType": "application/pdf",
+  "limit": 10,
+  "title": "Finding NDA files"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| query | string | Yes | Filename or partial filename |
+| mimeType | string | No | Optional MIME type prefix filter |
+| limit | integer | No | Max results (1-50, default: 10) |
+| title | string | No | Progress title shown to user |
+
+**Output**:
+```json
+{
+  "success": true,
+  "query": "NDA",
+  "results": [
+    {
+      "id": "file-456",
+      "name": "NDA_ClientABC_2024.pdf",
+      "mimeType": "application/pdf",
+      "size": 245000,
+      "sourceType": "drive_file"
+    }
+  ],
+  "count": 3
+}
+```
+
+**When to Use**:
+- User mentions a specific file name
+- Semantic search finds no results
+- Looking for files by type (PDFs, DOCX, etc.)
+
+**When NOT to Use**:
+- Searching by content (use searchDocuments)
+- Searching the internet (use webSearch)
+
+**Failure Modes**:
+- File not found if name doesn't match
+- Returns empty array if no matches
+- Case-insensitive matching but exact partial match required
+
+---
+
+### 4.3 workspaceRagRetrieve
+
+**Purpose**: Retrieve relevant passages from the current workspace document vector index. Only works in workspace chat context.
+
+**Input Parameters**:
+```json
+{
+  "query": "force majeure provisions",
+  "topK": 10,
+  "title": "Searching workspace documents"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| query | string | Yes | Natural language retrieval query |
+| topK | integer | No | Number of results (1-50, default: 5) |
+| title | string | No | Progress title shown to user |
+
+**Output**:
+```json
+{
+  "success": true,
+  "workspaceName": "Acquisition Project",
+  "query": "force majeure provisions",
+  "results": [...],
+  "count": 5
+}
+```
+
+**When to Use**:
+- Working within a workspace
+- Need to find information across workspace documents
+- Searching project-specific materials
+
+**When NOT to Use**:
+- Outside workspace context (use searchDocuments)
+- Searching personal documents (use searchDocuments)
+
+**Failure Modes**:
+- Requires workspace context
+- No indexed workspace documents
+- Returns error if not in workspace chat
+
+---
+
+### 4.4 webSearch
+
+**Purpose**: Search the web using Exa Search for current information, facts, news, or external sources.
+
+**Input Parameters**:
+```json
+{
+  "query": "latest RERA amendments Maharashtra 2024",
+  "topK": 5,
+  "title": "Searching for RERA updates"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| query | string | Yes | Search query (max 300 chars) |
+| topK | integer | No | Results count (1-10, default: 5) |
+| title | string | No | Progress title shown to user |
+
+**Output**:
+```json
+{
+  "success": true,
+  "query": "latest RERA amendments Maharashtra 2024",
+  "results": [
+    {
+      "title": "Maharashtra RERA Amendment 2024",
+      "url": "https://example.com/article",
+      "snippet": "The Maharashtra government has amended...",
+      "source": "example.com",
+      "score": 0.95
+    }
+  ],
+  "count": 5
+}
+```
+
+**When to Use**:
+- Need current information or news
+- Researching external legal developments
+- Finding recent case law or amendments
+- User asks about current events
+
+**When NOT to Use**:
+- Searching personal documents (use searchDocuments)
+- Searching workspace documents (use workspaceRagRetrieve)
+- Need full page content (follow up with httpGet)
+
+**Failure Modes**:
+- API unavailable or rate limited
+- No results for niche queries
+- Results may be outdated or irrelevant
+- Network timeouts
+
+---
+
+### 4.5 httpGet
+
+**Purpose**: Fetch a specific URL and convert it to readable markdown. Use after webSearch when page contents are needed.
+
+**Input Parameters**:
+```json
+{
+  "url": "https://example.com/legal-article",
+  "title": "Reading legal article"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| url | string | Yes | Fully qualified URL to fetch |
+| title | string | No | Progress title shown to user |
+
+**Output**:
+```json
+{
+  "success": true,
+  "status": 200,
+  "url": "https://example.com/legal-article",
+  "mediaType": "text/markdown",
+  "contentPreview": "# Article Title\n\nFull article content...",
+  "bytesRead": 15000,
+  "truncated": false
+}
+```
+
+**When to Use**:
+- Need full content from a specific URL
+- Following up on webSearch results
+- Reading online legal documents or articles
+
+**When NOT to Use**:
+- Searching for URLs (use webSearch first)
+- Accessing private/internal URLs (blocked for security)
+- Accessing localhost or private IPs (blocked)
+
+**Failure Modes**:
+- Invalid or unreachable URL
+- Private/local URLs blocked
+- Page requires authentication
+- Content too large (truncated at 6,000 chars)
+- Network timeouts
+
+---
+
+### 4.6 searchSources (Legacy)
+
+**Purpose**: Search through indexed personal sources. This is a legacy tool that wraps the RAG search functionality.
+
+**Input Parameters**:
+```json
+{
+  "query": "non-compete enforceability",
+  "topK": 5
+}
+```
+
+**When to Use**:
+- Legacy integration
+- Same as searchDocuments
+
+**When NOT to Use**:
+- Prefer searchDocuments for new implementations
+
+---
+
+## 5. Document Tools - Working with Documents
+
+Document tools help the AI read, create, edit, and compare documents. These are the workhorses of document management.
+
+### 5.1 readDocument
+
+**Purpose**: Read the full text content of a document. Supports DOCX, PDF, images, and other formats.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "title": "Reading contract document"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| doc_id | string | Yes | Document ID to read |
+| title | string | No | Progress title shown to user |
+
+**Output**:
+```json
+{
+  "success": true,
+  "doc_id": "doc-123",
+  "filename": "Contract_v2.docx",
+  "content": "Full document text...",
+  "file_type": "docx"
+}
+```
+
+**When to Use**:
+- Need to read a specific document's content
+- Analyzing or reviewing a document
+- Preparing for other operations (comparison, analysis)
+
+**When NOT to Use**:
+- Searching for documents (use searchDocuments)
+- Reading workspace files (use workspaceRagRetrieve)
+- Reading only specific sections (use findInDocument)
+
+**Failure Modes**:
+- Document not found
+- Unsupported file format
+- Document too large (truncated at 120,000 chars)
+- Permission denied
+- Corrupted file
+
+---
+
+### 5.2 findInDocument
+
+**Purpose**: Search within a specific document for particular terms or sections. More efficient than reading the entire document.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "query": "termination clause",
+  "title": "Finding termination clause"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| doc_id | string | Yes | Document ID to search |
+| query | string | Yes | Search term or phrase |
+| title | string | No | Progress title shown to user |
+
+**Output**:
+```json
+{
+  "success": true,
+  "doc_id": "doc-123",
+  "matches": [
+    {
+      "text": "This Agreement may be terminated by...",
+      "position": 1520,
+      "context": "...preceding text [MATCH] following text..."
+    }
+  ],
+  "match_count": 3
+}
+```
+
+**When to Use**:
+- Looking for specific clauses in a document
+- Need to locate sections quickly
+- Follow-up after searchDocuments
+
+**When NOT to Use**:
+- Need full document content (use readDocument)
+- Searching across multiple documents (use searchDocuments)
+
+**Failure Modes**:
+- Document not found
+- No matches for query
+- Query too vague
+
+---
+
+### 5.3 generateDocx
+
+**Purpose**: Generate a new DOCX document from structured content. Creates professional Word documents with proper formatting.
+
+**Input Parameters**:
+```json
+{
+  "title": "Legal Memorandum",
+  "filename": "Legal_Memo_2024.docx",
+  "content": [
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Executive Summary"
+    },
+    {
+      "type": "paragraph",
+      "text": "This memorandum analyzes..."
+    }
+  ]
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| title | string | Yes | Document title |
+| filename | string | Yes | Output filename |
+| content | array | Yes | Structured content array |
+
+**Output**:
+```json
+{
+  "success": true,
+  "filename": "Legal_Memo_2024.docx",
+  "download_url": "/api/download/...",
+  "document_id": "doc-789"
+}
+```
+
+**When to Use**:
+- Creating new legal documents
+- Drafting contracts or agreements
+- Generating reports or memos
+- Creating structured documents with tables, headings, lists
+
+**When NOT to Use**:
+- Editing existing documents (use editDocument)
+- Creating presentations (use generatePptx)
+- Creating spreadsheets (use generateXlsx)
+
+**Failure Modes**:
+- Invalid content structure
+- Missing required fields
+- Storage quota exceeded
+- Generation timeout
+
+---
+
+### 5.4 editDocument
+
+**Purpose**: Apply tracked changes to an existing document. Creates redlined versions with change tracking.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "edits": [
+    {
+      "type": "replace",
+      "old_text": "The Vendor shall",
+      "new_text": "The Client may, at its sole discretion, direct the Vendor to"
+    }
+  ],
+  "title": "Editing contract terms"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| doc_id | string | Yes | Document ID to edit |
+| edits | array | Yes | Array of edit operations |
+| title | string | No | Progress title shown to user |
+
+**When to Use**:
+- Making specific changes to documents
+- Creating redlined versions
+- Applying suggested edits
+- Contract negotiations
+
+**When NOT to Use**:
+- Creating new documents (use generateDocx)
+- Reading document content (use readDocument)
+- Comparing documents (use compareDocuments)
+
+**Failure Modes**:
+- Document not found
+- Edit text not found in document
+- Permission denied
+- Document locked or in use
+
+---
+
+### 5.5 compareDocuments
+
+**Purpose**: Compare two document versions with semantic analysis, change classification, and negotiation recommendations.
+
+**Input Parameters**:
+```json
+{
+  "doc_id_a": "doc-123",
+  "doc_id_b": "doc-456",
+  "comparison_depth": "semantic",
+  "our_party": "Acme Corp",
+  "include_recommendations": true
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| doc_id_a | string | Yes | First document (typically older) |
+| doc_id_b | string | Yes | Second document (typically newer) |
+| comparison_depth | string | No | "text_diff", "clause_level", or "semantic" |
+| our_party | string | No | Which party we represent |
+| include_recommendations | boolean | No | Include negotiation recommendations |
+
+**Output**:
+```json
+{
+  "success": true,
+  "changes": [
+    {
+      "type": "substantive",
+      "clause": "Limitation of Liability",
+      "description": "Liability cap changed from 12 months to 24 months",
+      "risk_level": "medium"
+    }
+  ],
+  "summary": "15 substantive changes, 8 cosmetic changes",
+  "recommendations": [...]
+}
+```
+
+**When to Use**:
+- Reviewing contract versions
+- Negotiation preparation
+- Tracking changes over time
+- Due diligence reviews
+
+**When NOT to Use**:
+- Reading a single document (use readDocument)
+- Making edits (use editDocument)
+
+**Failure Modes**:
+- Either document not found
+- Documents too different for meaningful comparison
+- Comparison timeout for large documents
+
+---
+
+### 5.6 listDocuments
+
+**Purpose**: List all documents in the current workspace or project.
+
+**Input Parameters**:
+```json
+{
+  "limit": 50,
+  "offset": 0,
+  "title": "Listing workspace documents"
+}
+```
+
+**When to Use**:
+- Need overview of available documents
+- Browsing workspace contents
+- Finding documents by browsing
+
+**When NOT to Use**:
+- Searching for specific content (use searchDocuments)
+- Searching by filename (use searchFilesByName)
+
+---
+
+### 5.7 extractClauses
+
+**Purpose**: Extract specific clauses or sections from a document.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "clause_types": ["indemnity", "limitation", "termination"],
+  "title": "Extracting key clauses"
+}
+```
+
+**When to Use**:
+- Need specific clause types from a document
+- Building clause libraries
+- Analyzing specific provisions
+
+**When NOT to Use**:
+- Reading entire document (use readDocument)
+- Analyzing clauses (use clauseAnalysis)
+
+---
+
+### 5.8 consistencyCheck
+
+**Purpose**: Check document consistency and identify internal contradictions.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "title": "Checking document consistency"
+}
+```
+
+**When to Use**:
+- Reviewing draft documents
+- Quality assurance
+- Finding internal conflicts
+
+**When NOT to Use**:
+- Full document review (use documentReview)
+- Compliance checking (use complianceCheck)
+
+---
+
+### 5.9 fillAndCreate
+
+**Purpose**: Fill template fields and create a new document from a template.
+
+**Input Parameters**:
+```json
+{
+  "template_id": "tmpl-123",
+  "values": {
+    "party_name": "Acme Corp",
+    "effective_date": "2024-01-15",
+    "contract_value": "500000"
+  },
+  "output_filename": "Acme_Contract_2024.docx"
+}
+```
+
+**When to Use**:
+- Using saved templates
+- Creating documents from standard forms
+- Populating template fields
+
+**When NOT to Use**:
+- Creating documents from scratch (use generateDocx)
+- Editing existing documents (use editDocument)
+
+---
+
+### 5.10 suggestEdit
+
+**Purpose**: Suggest edits to a document with explanations.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "intent": "Improve clarity of obligations",
+  "focus_areas": ["ambiguity", "enforceability"]
+}
+```
+
+**When to Use**:
+- Getting improvement suggestions
+- Reviewing draft documents
+- Preparing for negotiations
+
+**When NOT to Use**:
+- Making actual edits (use editDocument)
+- Full review (use documentReview)
+
+---
+
+### 5.11 extractPlaceholders
+
+**Purpose**: Extract placeholder fields from a document template.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "title": "Extracting template fields"
+}
+```
+
+**When to Use**:
+- Identifying template fields
+- Preparing to fill templates
+- Template analysis
+
+---
+
+### 5.12 fillPlaceholders
+
+**Purpose**: Fill placeholder values in a document.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "values": {
+    "PARTY_NAME": "Acme Corp",
+    "DATE": "2024-01-15"
+  }
+}
+```
+
+**When to Use**:
+- Populating template documents
+- Creating filled versions
+
+---
+
+### 5.13 fetchDocuments
+
+**Purpose**: Fetch multiple documents at once for batch operations.
+
+**Input Parameters**:
+```json
+{
+  "doc_ids": ["doc-123", "doc-456", "doc-789"],
+  "title": "Fetching contract documents"
+}
+```
+
+**When to Use**:
+- Need multiple documents for analysis
+- Batch operations
+- Cross-document comparisons
+
+**Failure Modes**:
+- Maximum 5 documents per call
+- Maximum 60,000 total characters
+
+---
+
+### 5.14 replicateDocument
+
+**Purpose**: Create a copy of an existing document.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "new_filename": "Contract_v3_DRAFT.docx"
+}
+```
+
+**When to Use**:
+- Creating document versions
+- Making backup copies
+- Starting from existing document
+
+---
+
+### 5.15 readTableCells
+
+**Purpose**: Read table data from a document or spreadsheet.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "table_index": 0,
+  "title": "Reading contract table"
+}
+```
+
+**When to Use**:
+- Extracting tabular data
+- Analyzing structured information
+- Reading spreadsheet data
+
+---
+
+## 6. Legal Analysis Tools - Understanding Law
+
+Legal analysis tools provide deep insights into legal documents, compliance, and risk assessment.
+
+### 6.1 analysisTable
+
+**Purpose**: Generate interactive analysis tables from documents - obligations, payments, timelines, risks, comparisons, etc.
+
+**Input Parameters**:
+```json
+{
+  "doc_ids": ["doc-123", "doc-456"],
+  "table_type": "obligations",
+  "filters": {
+    "party": "Vendor"
+  },
+  "sort_by": "due_date"
+}
+```
+
+| table_type | Description |
+|------------|-------------|
+| obligations | Extract all obligations from documents |
+| payments | Payment terms and schedules |
+| timeline | Key dates and deadlines |
+| responsibilities | Party responsibilities |
+| defined_terms | Defined terms glossary |
+| approvals | Approval requirements |
+| risk_matrix | Risk assessment matrix |
+| comparison | Document comparison table |
+| compliance_gaps | Compliance gap analysis |
+| deliverables | Deliverables tracking |
+| renewals | Renewal dates and terms |
+| notices | Notice requirements |
+| indemnities | Indemnification provisions |
+| liabilities | Liability provisions |
+| custom | Custom column definitions |
+
+**When to Use**:
+- Structured analysis of legal documents
+- Extracting specific data points
+- Creating comparison matrices
+- Building due diligence tables
+
+**When NOT to Use**:
+- Free-form document review (use documentReview)
+- Simple document reading (use readDocument)
+
+---
+
+### 6.2 clauseAnalysis
+
+**Purpose**: Deep clause-by-clause analysis with risk assessment, negotiation points, enforceability, and improvement suggestions.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "clause_references": ["Clause 5", "Clause 12"],
+  "analysis_depth": "comprehensive",
+  "jurisdiction": "India",
+  "compare_to_market_standard": true
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| doc_id | string | Yes | Document to analyze |
+| clause_references | array | No | Specific clauses to analyze |
+| analysis_depth | string | No | "summary", "detailed", or "comprehensive" |
+| jurisdiction | string | No | Jurisdiction for enforceability |
+| compare_to_market_standard | boolean | No | Include market comparison |
+
+**When to Use**:
+- Detailed contract review
+- Risk assessment
+- Negotiation preparation
+- Clause drafting assistance
+
+**When NOT to Use**:
+- Quick document overview (use documentReview)
+- Compliance checking (use complianceCheck)
+
+---
+
+### 6.3 complianceCheck
+
+**Purpose**: Run comprehensive compliance analysis against regulatory frameworks, internal playbooks, and custom rules.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "frameworks": ["GDPR", "DPDP", "Companies_Act"],
+  "jurisdiction": "India",
+  "playbook_id": "playbook-123",
+  "custom_rules": ["Must include data retention clause"],
+  "include_remediation": true
+}
+```
+
+| framework | Description |
+|-----------|-------------|
+| GDPR | EU General Data Protection Regulation |
+| DPDP | India Digital Personal Data Protection Act |
+| RERA | Real Estate Regulatory Authority |
+| Companies_Act | Companies Act 2013 |
+| SEBI | Securities and Exchange Board of India |
+| RBI | Reserve Bank of India |
+| Labor_Laws | Indian Labor Laws |
+| IPC | Indian Penal Code |
+| CPC | Code of Civil Procedure |
+| Custom | Custom compliance rules |
+
+**When to Use**:
+- Regulatory compliance review
+- Internal policy compliance
+- Custom rule validation
+- Audit preparation
+
+**When NOT to Use**:
+- General document review (use documentReview)
+- Risk assessment (use riskAssessment)
+
+---
+
+### 6.4 documentReview
+
+**Purpose**: Comprehensive document review with executive summary, issue spotting, risk analysis, missing clauses, duplicates, conflicts, and prioritized recommendations.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "review_type": "full_review",
+  "our_party": "Acme Corp",
+  "risk_tolerance": "moderate",
+  "focus_areas": ["enforceability", "ambiguity"]
+}
+```
+
+| review_type | Description |
+|-------------|-------------|
+| executive_summary | High-level overview |
+| full_review | Complete analysis |
+| risk_analysis | Risk-focused review |
+| counterparty_review | Review from counterparty perspective |
+| redline_review | Review with redline suggestions |
+
+**When to Use**:
+- Initial document review
+- Due diligence
+- Contract negotiation preparation
+- Quality assurance
+
+**When NOT to Use**:
+- Specific clause analysis (use clauseAnalysis)
+- Compliance checking (use complianceCheck)
+
+---
+
+### 6.5 intelligentEdit
+
+**Purpose**: Analyze a document and propose intelligent edits with legal reasoning. Returns structured analysis with issues categorized by severity and type.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "intent": "Strengthen indemnification provisions",
+  "jurisdiction": "India",
+  "focus_areas": ["enforceability", "ambiguity", "compliance"]
+}
+```
+
+**When to Use**:
+- Document improvement
+- Contract strengthening
+- Risk mitigation
+- Draft enhancement
+
+**When NOT to Use**:
+- Simple text edits (use editDocument)
+- Full review (use documentReview)
+
+---
+
+### 6.6 stampDutyCalculate
+
+**Purpose**: Calculate stamp duty requirements for legal documents.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "state": "Maharashtra",
+  "transaction_value": 5000000
+}
+```
+
+**When to Use**:
+- Estimating stamp duty costs
+- Compliance with stamp duty requirements
+- Transaction cost estimation
+
+**When NOT to Use**:
+- General document analysis
+- Non-Indian documents
+
+---
+
+### 6.7 deadlineCalculate
+
+**Purpose**: Calculate deadlines and time-sensitive obligations from documents.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "reference_date": "2024-01-15",
+  "include_reminders": true
+}
+```
+
+**When to Use**:
+- Identifying critical deadlines
+- Calendar planning
+- Obligation tracking
+
+**When NOT to Use**:
+- Simple timeline extraction (use extractTimelines)
+
+---
+
+### 6.8 negotiateSupport
+
+**Purpose**: AI-powered negotiation assistance with counterparty analysis, fallback clauses, concession strategies.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "counterparty_doc_id": "doc-456",
+  "our_party": "Acme Corp",
+  "negotiation_round": 2,
+  "priority_issues": ["Liability cap", "Indemnification"],
+  "walk_away_points": ["Non-compete must be limited"]
+}
+```
+
+**When to Use**:
+- Contract negotiations
+- Strategy development
+- Concession planning
+- Counterparty analysis
+
+**When NOT to Use**:
+- Document review (use documentReview)
+- Simple comparison (use compareDocuments)
+
+---
+
+### 6.9 extractTimelines
+
+**Purpose**: Extract all dates, deadlines, milestones, and time-based obligations from a document.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "reference_date": "2024-01-15",
+  "include_reminders": true,
+  "reminder_advance_days": 30,
+  "calendar_export": true
+}
+```
+
+**When to Use**:
+- Calendar planning
+- Deadline tracking
+- Milestone identification
+- iCal export
+
+**When NOT to Use**:
+- Simple date extraction (use readDocument)
+- Complex timeline analysis (use analysisTable)
+
+---
+
+### 6.10 prepareApprovalPackage
+
+**Purpose**: Prepare documents and executive summaries for approval workflow.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "approver_role": "partner",
+  "include_risk_summary": true,
+  "include_comparison": true,
+  "comparison_doc_id": "doc-456"
+}
+```
+
+| approver_role | Description |
+|---------------|-------------|
+| partner | Law firm partner |
+| client | Client approval |
+| board | Board of directors |
+| legal_head | Legal department head |
+| business_head | Business unit head |
+| compliance | Compliance officer |
+| finance | Finance approval |
+
+**When to Use**:
+- Approval workflows
+- Executive summaries
+- Board presentations
+- Client approvals
+
+**When NOT to Use**:
+- Internal review (use documentReview)
+- Simple document reading
+
+---
+
+### 6.11 workspaceAnalysis
+
+**Purpose**: Analyze relationships and consistency across workspace documents.
+
+**Input Parameters**:
+```json
+{
+  "analysis_type": "inconsistency_check",
+  "doc_ids": ["doc-123", "doc-456", "doc-789"],
+  "report_format": "detailed"
+}
+```
+
+| analysis_type | Description |
+|---------------|-------------|
+| inconsistency_check | Find contradictions |
+| cross_reference_validation | Validate cross-references |
+| term_harmonization | Ensure consistent terminology |
+| date_alignment | Check date consistency |
+| party_consistency | Verify party references |
+| obligation_summary | Summarize all obligations |
+| risk_aggregation | Aggregate risks across documents |
+
+**When to Use**:
+- Multi-document review
+- Due diligence
+- Contract harmonization
+- Quality assurance
+
+**When NOT to Use**:
+- Single document review (use documentReview)
+- Simple comparison (use compareDocuments)
+
+---
+
+### 6.12 legalResearch
+
+**Purpose**: Comprehensive legal research across documents, regulations, knowledge bases, and web sources with cited results.
+
+**Input Parameters**:
+```json
+{
+  "query": "Enforceability of non-compete clauses in India",
+  "sources": ["documents", "regulations", "precedents", "case_law"],
+  "jurisdiction": "India",
+  "require_citations": true,
+  "date_range": {
+    "from": "2020-01-01",
+    "to": "2024-01-01"
+  }
+}
+```
+
+**When to Use**:
+- Legal research
+- Case law analysis
+- Regulatory research
+- Academic research
+
+**When NOT to Use**:
+- Simple web search (use webSearch)
+- Document-specific research (use searchDocuments)
+
+---
+
+### 6.13 riskAssessment
+
+**Purpose**: Comprehensive risk scoring with multiple dimensions: severity, business impact, legal impact, financial exposure, and likelihood.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "risk_tolerance": "conservative",
+  "industry": "Technology",
+  "transaction_value": 10000000
+}
+```
+
+**When to Use**:
+- Risk evaluation
+- Investment decisions
+- Due diligence
+- Contract negotiation
+
+**When NOT to Use**:
+- General document review (use documentReview)
+- Compliance checking (use complianceCheck)
+
+---
+
+## 7. Generation Tools - Creating Content
+
+Generation tools create new content like presentations, spreadsheets, and visual elements.
+
+### 7.1 generateImage
+
+**Purpose**: Generate images for presentations, reports, or visual content.
+
+**Input Parameters**:
+```json
+{
+  "prompt": "Corporate flowchart showing acquisition process",
+  "style": "professional",
+  "width": 1024,
+  "height": 768
+}
+```
+
+**When to Use**:
+- Creating visual content
+- Presentation graphics
+- Report illustrations
+
+**When NOT to Use**:
+- Text-based content (use generateDocx)
+- Data visualization (use generateXlsx)
+
+---
+
+### 7.2 generateVideo
+
+**Purpose**: Generate video content for presentations or training materials.
+
+**Input Parameters**:
+```json
+{
+  "script": "Welcome to our legal training module...",
+  "style": "corporate",
+  "duration": 60
+}
+```
+
+**When to Use**:
+- Training materials
+- Presentation videos
+- Marketing content
+
+**When NOT to Use**:
+- Static content (use generateDocx or generatePptx)
+
+---
+
+### 7.3 pptxVisualInspect
+
+**Purpose**: Inspect a rendered PPTX slide image using Gemini vision model. Use to analyze slide content, verify visual elements, check layout.
+
+**Input Parameters**:
+```json
+{
+  "filePath": "/mnt/output/presentation.png",
+  "prompt": "Check if the chart is readable and properly labeled",
+  "schema": {
+    "readable": "boolean",
+    "issues": "array"
+  }
+}
+```
+
+**When to Use**:
+- Quality assurance for presentations
+- Verifying visual elements
+- Extracting text from images
+- Layout validation
+
+**When NOT to Use**:
+- Creating presentations (use generatePptx)
+- Reading text documents (use readDocument)
+
+---
+
+### 7.4 pythonInterpreter
+
+**Purpose**: Run Python code inside the Agent Sandbox for calculations, data analysis, chart data preparation.
+
+**Input Parameters**:
+```json
+{
+  "code": "import json\nresult = {'total': sum([100, 200, 300])}\nprint(json.dumps(result))",
+  "timeoutMs": 30000
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| code | string | No | Python source code to execute |
+| path | string | No | Python file path (alternative to inline code) |
+| args | array | No | Command-line arguments |
+| timeoutMs | integer | No | Execution timeout (1000-120000ms) |
+
+**When to Use**:
+- Data calculations
+- Chart data preparation
+- JSON/CSV processing
+- Complex logic execution
+
+**When NOT to Use**:
+- File generation (use sandboxExec with make-docx/pptx/xlsx)
+- Shell commands (use sandboxExec)
+
+---
+
+## 8. Email Tools - Communication
+
+Email tools help the AI interact with your email account.
+
+### 8.1 email
+
+**Purpose**: Email operations: search, read, view threads, trash, mark read/unread, list labels, and save attachments.
+
+**Input Parameters**:
+```json
+{
+  "action": "search",
+  "query": "contract review",
+  "from": "client@example.com",
+  "after": "2024-01-01",
+  "maxResults": 10
+}
+```
+
+| action | Description |
+|--------|-------------|
+| search | Search emails with filters |
+| read | Read specific email(s) |
+| thread | Get email thread |
+| trash | Move to trash |
+| markRead | Mark as read |
+| markUnread | Mark as unread |
+| labels | List email labels |
+| saveAttachments | Save attachments to drive |
+
+**When to Use**:
+- Finding email correspondence
+- Reading email threads
+- Managing email
+- Saving attachments
+
+**When NOT to Use**:
+- Composing emails (use emailDraft)
+- Searching documents (use searchDocuments)
+
+**Failure Modes**:
+- Email not connected
+- Permission denied
+- Network errors
+- Attachment download failures
+
+---
+
+### 8.2 emailDraft
+
+**Purpose**: Compose email drafts with attachments. Never sends directly—creates drafts for user review.
+
+**Input Parameters**:
+```json
+{
+  "action": "compose",
+  "to": ["client@example.com"],
+  "cc": ["team@example.com"],
+  "subject": "Contract Review - Action Required",
+  "body": "Dear Client,\n\nPlease find the reviewed contract attached...",
+  "attachments": [
+    {
+      "fileId": "file-123",
+      "inline": false
+    }
+  ]
+}
+```
+
+| action | Description |
+|--------|-------------|
+| compose | Create new draft |
+| reply | Reply to email |
+| forward | Forward email |
+| get | Get draft details |
+| addAttachment | Add attachment to draft |
+| removeAttachment | Remove attachment from draft |
+
+**When to Use**:
+- Drafting emails
+- Replying to correspondence
+- Forwarding with context
+- Adding attachments
+
+**When NOT to Use**:
+- Reading emails (use email)
+- Searching emails (use email)
+
+**Failure Modes**:
+- Email not connected
+- Invalid recipient
+- Attachment too large
+- Draft creation failed
+
+---
+
+## 9. Workspace Tools - Project Management
+
+Workspace tools help organize and manage projects and workspaces.
+
+### 9.1 createProject
+
+**Purpose**: Create a new project within a workspace.
+
+**Input Parameters**:
+```json
+{
+  "name": "Acquisition Due Diligence",
+  "description": "Due diligence for ABC Corp acquisition",
+  "workspace_id": "ws-123"
+}
+```
+
+**When to Use**:
+- Starting new matters
+- Organizing work
+- Creating project structure
+
+**When NOT to Use**:
+- Adding to existing project (use workspaceAddItem)
+- Creating workspace (use createWorkspace)
+
+---
+
+### 9.2 createWorkspace
+
+**Purpose**: Create a new workspace for team collaboration.
+
+**Input Parameters**:
+```json
+{
+  "name": "M&A Practice Group",
+  "description": "Workspace for M&A team"
+}
+```
+
+**When to Use**:
+- New team workspace
+- Matter organization
+- Client workspace
+
+**When NOT to Use**:
+- Adding to existing workspace (use workspaceAddItem)
+- Creating project (use createProject)
+
+---
+
+### 9.3 workspaceAddItem
+
+**Purpose**: Add an item to a specified workspace.
+
+**Input Parameters**:
+```json
+{
+  "workspaceId": "ws-123",
+  "itemType": "document",
+  "title": "Draft Contract v2",
+  "content": "Document reference or content",
+  "tags": ["contract", "draft", "urgent"]
+}
+```
+
+| itemType | Description |
+|----------|-------------|
+| document | Add document reference |
+| note | Add text note |
+| file | Add file |
+| link | Add URL link |
+| snippet | Add text snippet |
+
+**When to Use**:
+- Organizing workspace content
+- Saving items to workspace
+- Tagging and categorizing
+
+**When NOT to Use**:
+- Creating documents (use generateDocx)
+- Searching workspace (use workspaceRagRetrieve)
+
+---
+
+## 10. Task Tools - Managing Work
+
+Task tools help manage tasks and team assignments.
+
+### 10.1 workspaceTask
+
+**Purpose**: Manage workspace tasks: list, read, create, update, delete, assign, unassign, move, and comment.
+
+**Input Parameters**:
+```json
+{
+  "action": "createTask",
+  "taskTitle": "Review NDA with Client ABC",
+  "description": "Review and redline the NDA",
+  "priority": "high",
+  "dueDate": "2024-01-20",
+  "assigneeIds": ["user-123"]
+}
+```
+
+| action | Description |
+|--------|-------------|
+| getTasks | List tasks with filters |
+| getTask | Get single task details |
+| createTask | Create new task |
+| updateTask | Update task details |
+| deleteTask | Delete a task |
+| assignTask | Assign users to task |
+| unassignTask | Unassign users from task |
+| moveTask | Move task to different list |
+| addComment | Add comment to task |
+
+**When to Use**:
+- Task management
+- Team coordination
+- Work tracking
+- Deadline management
+
+**When NOT to Use**:
+- Document management (use workspace tools)
+- Email management (use email tools)
+
+---
+
+### 10.2 workspaceMembers
+
+**Purpose**: Find workspace members for mentions and task assignments.
+
+**Input Parameters**:
+```json
+{
+  "action": "list",
+  "search": "john",
+  "limit": 10
+}
+```
+
+| action | Description |
+|--------|-------------|
+| list | Search members by name/email |
+| get | Get specific member details |
+
+**When to Use**:
+- Finding team members
+- Task assignment
+- Mentioning users
+
+**When NOT to Use**:
+- Task management (use workspaceTask)
+- Email management (use email)
+
+---
+
+## 11. Workflow Tools - Automation
+
+Workflow tools help manage automated workflows.
+
+### 11.1 listWorkflows
+
+**Purpose**: List available workflows in the workspace.
+
+**Input Parameters**:
+```json
+{
+  "workspace_id": "ws-123",
+  "limit": 20
+}
+```
+
+**When to Use**:
+- Finding available workflows
+- Checking automation options
+- Workflow discovery
+
+**When NOT to Use**:
+- Running workflows (use specific workflow triggers)
+- Managing tasks (use workspaceTask)
+
+---
+
+### 11.2 readWorkflow
+
+**Purpose**: Read workflow definition and configuration.
+
+**Input Parameters**:
+```json
+{
+  "workflow_id": "wf-123"
+}
+```
+
+**When to Use**:
+- Understanding workflow steps
+- Reviewing automation logic
+- Workflow documentation
+
+**When NOT to Use**:
+- Listing workflows (use listWorkflows)
+- Running workflows
+
+---
+
+## 12. File Tools - File Operations
+
+File tools help manage files and documents.
+
+### 12.1 moveFile
+
+**Purpose**: Move files between folders or workspaces.
+
+**Input Parameters**:
+```json
+{
+  "file_id": "file-123",
+  "destination_folder_id": "folder-456",
+  "destination_workspace_id": "ws-789"
+}
+```
+
+**When to Use**:
+- Organizing files
+- Moving documents
+- Workspace management
+
+**When NOT to Use**:
+- Copying files (use replicateDocument)
+- Creating files (use generateDocx)
+
+---
+
+### 12.2 fileRedline
+
+**Purpose**: Create redlined version of a document with tracked changes.
+
+**Input Parameters**:
+```json
+{
+  "doc_id": "doc-123",
+  "changes": [
+    {
+      "type": "modify",
+      "section": "Clause 5.1",
+      "new_text": "Modified liability language"
+    }
+  ]
+}
+```
+
+**When to Use**:
+- Contract negotiations
+- Redline creation
+- Change tracking
+
+**When NOT to Use**:
+- Simple edits (use editDocument)
+- Document comparison (use compareDocuments)
+
+---
+
+## 13. External Tools - Third-Party Integration
+
+External tools connect to outside services and data sources.
+
+### 13.1 httpGet
+
+**Purpose**: Fetch a specific URL and convert it to readable markdown.
+
+**Input Parameters**:
+```json
+{
+  "url": "https://example.com/legal-article",
+  "title": "Reading article"
+}
+```
+
+**When to Use**:
+- Reading web content
+- Following up on search results
+- Accessing online documents
+
+**When NOT to Use**:
+- Searching the web (use webSearch)
+- Reading local files (use readDocument)
+
+---
+
+### 13.2 indianStock
+
+**Purpose**: Get Indian stock market data and information.
+
+**Input Parameters**:
+```json
+{
+  "symbol": "RELIANCE",
+  "data_type": "price"
+}
+```
+
+**When to Use**:
+- Stock price lookup
+- Market research
+- Financial analysis
+
+**When NOT to Use**:
+- Legal research (use legalResearch)
+- General web search (use webSearch)
+
+---
+
+## 14. Sandbox Tools - Code Execution
+
+Sandbox tools provide secure code execution and file operations in an isolated environment.
+
+### 14.1 sandboxExec
+
+**Purpose**: Run shell commands inside the Agent Sandbox workspace. Use for code execution, data transformation, file generation.
+
+**Input Parameters**:
+```json
+{
+  "command": "make-docx --title 'Legal Memo' --output /mnt/output/memo.docx",
+  "cwd": "/workspace",
+  "timeoutMs": 60000
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| command | string | Yes | Shell command to run |
+| cwd | string | No | Working directory |
+| stdin | string | No | Standard input |
+| timeoutMs | integer | No | Timeout (1000-120000ms) |
+
+**Custom Commands**:
+- `make-pptx`: Professional presentations
+- `make-docx`: Word documents
+- `make-xlsx`: Excel workbooks
+- `make-chart`: Chart JSON specs
+
+**When to Use**:
+- File generation
+- Data transformation
+- Complex operations
+- Code execution
+
+**When NOT to Use**:
+- Simple file operations (use sandboxReadFile/WriteFile)
+- Python code (use pythonInterpreter)
+
+---
+
+### 14.2 sandboxReadFile
+
+**Purpose**: Read a file from the Agent Sandbox workspace.
+
+**Input Parameters**:
+```json
+{
+  "path": "/workspace/data.json",
+  "mode": "text",
+  "instructions": "Extract contract terms"
+}
+```
+
+| mode | Description |
+|------|-------------|
+| raw | UTF-8 file content |
+| text | Extract readable text |
+| summary | Summarize extracted text |
+
+**When to Use**:
+- Reading sandbox files
+- Processing documents
+- Data extraction
+
+**When NOT to Use**:
+- Writing files (use sandboxWriteFile)
+- Executing code (use sandboxExec)
+
+---
+
+### 14.3 sandboxWriteFile
+
+**Purpose**: Create or overwrite a file in the Agent Sandbox workspace.
+
+**Input Parameters**:
+```json
+{
+  "path": "/workspace/output.json",
+  "content": "{\"key\": \"value\"}"
+}
+```
+
+**When to Use**:
+- Creating files
+- Writing data
+- Storing results
+
+**When NOT to Use**:
+- Editing files (use sandboxEditFile)
+- Reading files (use sandboxReadFile)
+
+---
+
+### 14.4 sandboxEditFile
+
+**Purpose**: Apply exact-text edits to a file in the Agent Sandbox workspace.
+
+**Input Parameters**:
+```json
+{
+  "path": "/workspace/config.json",
+  "edits": [
+    {
+      "oldText": "\"old_value\"",
+      "newText": "\"new_value\"",
+      "replaceAll": false
+    }
+  ]
+}
+```
+
+**When to Use**:
+- Modifying existing files
+- Targeted changes
+- Configuration updates
+
+**When NOT to Use**:
+- Creating files (use sandboxWriteFile)
+- Reading files (use sandboxReadFile)
+
+---
+
+### 14.5 sandboxListDir
+
+**Purpose**: List files and directories inside the Agent Sandbox workspace.
+
+**Input Parameters**:
+```json
+{
+  "path": "/workspace/output"
+}
+```
+
+**When to Use**:
+- Browsing sandbox contents
+- Checking file existence
+- Directory navigation
+
+**When NOT to Use**:
+- Reading files (use sandboxReadFile)
+- Writing files (use sandboxWriteFile)
+
+---
+
+### 14.6 fileModify
+
+**Purpose**: Modify files in the sandbox with tracked changes.
+
+**Input Parameters**:
+```json
+{
+  "path": "/workspace/document.docx",
+  "modifications": [
+    {
+      "type": "replace",
+      "old": "old text",
+      "new": "new text"
+    }
+  ]
+}
+```
+
+**When to Use**:
+- Document modification
+- Tracked changes
+- Content updates
+
+---
+
+### 14.7 document
+
+**Purpose**: Document operations in the sandbox.
+
+**Input Parameters**:
+```json
+{
+  "action": "create",
+  "type": "docx",
+  "content": {...}
+}
+```
+
+**When to Use**:
+- Document creation
+- Format conversion
+- Document processing
+
+---
+
+## 15. Agentic Tools - Advanced AI Operations
+
+Agentic tools provide advanced AI capabilities for complex legal operations.
+
+### 15.1 matterScan
+
+**Purpose**: Inspect a matter structure, summarize available files, and identify likely workstreams before detailed review.
+
+**Input Parameters**:
+```json
+{
+  "matter_id": "matter-123",
+  "include_files": true,
+  "identify_workstreams": true
+}
+```
+
+**Output**:
+```json
+{
+  "success": true,
+  "matter_summary": {
+    "file_count": 15,
+    "file_types": ["contract", "correspondence", "financial"],
+    "workstreams": ["due_diligence", "regulatory", "financial"]
+  }
+}
+```
+
+**When to Use**:
+- Initial matter assessment
+- Due diligence planning
+- Workstream identification
+- Matter organization
+
+**When NOT to Use**:
+- Detailed document review (use documentReview)
+- Specific file operations
+
+---
+
+### 15.2 documentClassify
+
+**Purpose**: Classify documents by type, custodian, practice area, jurisdiction, date, and likely relevance.
+
+**Input Parameters**:
+```json
+{
+  "document_ids": ["doc-123", "doc-456", "doc-789"],
+  "classification_dimensions": ["type", "jurisdiction", "relevance"]
+}
+```
+
+**Output**:
+```json
+{
+  "success": true,
+  "classifications": [
+    {
+      "doc_id": "doc-123",
+      "type": "contract",
+      "jurisdiction": "India",
+      "relevance": "high"
+    }
+  ]
+}
+```
+
+**When to Use**:
+- Document organization
+- Due diligence
+- Matter management
+- Relevance assessment
+
+**When NOT to Use**:
+- Detailed analysis (use documentReview)
+- Specific document operations
+
+---
+
+### 15.3 tabularReview
+
+**Purpose**: Extract structured findings into review rows for due diligence, pleadings, compliance, or issue tracking.
+
+**Input Parameters**:
+```json
+{
+  "document_ids": ["doc-123", "doc-456"],
+  "review_schema": {
+    "columns": ["clause", "risk_level", "issue", "recommendation"],
+    "review_type": "due_diligence"
+  }
+}
+```
+
+**Output**:
+```json
+{
+  "success": true,
+  "findings": [
+    {
+      "doc_id": "doc-123",
+      "clause": "Indemnification",
+      "risk_level": "high",
+      "issue": "Unlimited indemnity exposure",
+      "recommendation": "Cap indemnity at contract value"
+    }
+  ]
+}
+```
+
+**When to Use**:
+- Due diligence reviews
+- Compliance tracking
+- Issue identification
+- Structured analysis
+
+**When NOT to Use**:
+- Free-form analysis (use documentReview)
+- Simple document reading
+
+---
+
+### 15.4 redline (Agentic)
+
+**Purpose**: Prepare precise document edits or redlines for human review against an existing document or template.
+
+**Input Parameters**:
+```json
+{
+  "document_id": "doc-123",
+  "edit_instructions": [
+    {
+      "section": "Clause 5.1",
+      "action": "modify",
+      "reason": "Strengthen indemnification",
+      "new_text": "Modified language..."
+    }
+  ],
+  "create_version": true
+}
+```
+
+**Output**:
+```json
+{
+  "success": true,
+  "redline_version_id": "ver-456",
+  "changes": [
+    {
+      "section": "Clause 5.1",
+      "change_type": "modification",
+      "tracked_change": "..."
+    }
+  ]
+}
+```
+
+**When to Use**:
+- Contract negotiations
+- Redline creation
+- Document modification
+- Version control
+
+**When NOT to Use**:
+- Simple edits (use editDocument)
+- Document review (use documentReview)
+
+---
+
+### 15.5 list.extract_items
+
+**Purpose**: Extract atomic checklist, tracker, obligation, or task items from matter documents.
+
+**Input Parameters**:
+```json
+{
+  "document_ids": ["doc-123"],
+  "item_type": "obligations",
+  "output_format": "checklist"
+}
+```
+
+**When to Use**:
+- Checklist creation
+- Obligation extraction
+- Task identification
+- Due diligence
+
+---
+
+### 15.6 list.extract_chronology
+
+**Purpose**: Extract dated factual events with source references and confidence from pleadings, evidence, and witness materials.
+
+**Input Parameters**:
+```json
+{
+  "document_ids": ["doc-123", "doc-456"],
+  "reference_date": "2024-01-15",
+  "include_confidence": true
+}
+```
+
+**When to Use**:
+- Case chronology
+- Timeline construction
+- Event extraction
+- Fact analysis
+
+---
+
+### 15.7 monitor.scan
+
+**Purpose**: Summarize regulatory developments by jurisdiction, topic, source, and likely materiality.
+
+**Input Parameters**:
+```json
+{
+  "jurisdiction": "India",
+  "topics": ["data_protection", "securities"],
+  "time_range": "last_30_days"
+}
+```
+
+**When to Use**:
+- Regulatory monitoring
+- Compliance updates
+- Legal intelligence
+- Risk assessment
+
+---
+
+### 15.8 review.gap_analysis
+
+**Purpose**: Compare external requirements against internal policies, answers, or document sets and identify coverage gaps.
+
+**Input Parameters**:
+```json
+{
+  "requirements_source": "GDPR",
+  "document_ids": ["doc-123"],
+  "policy_id": "policy-456"
+}
+```
+
+**When to Use**:
+- Compliance gap analysis
+- Policy review
+- Regulatory assessment
+- Due diligence
+
+---
+
+### 15.9 visualization.generate_spec
+
+**Purpose**: Convert legal relationship, risk, or chronology data into a structured diagram or chart specification.
+
+**Input Parameters**:
+```json
+{
+  "data_type": "risk_matrix",
+  "data": [...],
+  "visualization_type": "heatmap"
+}
+```
+
+**When to Use**:
+- Data visualization
+- Chart creation
+- Diagram generation
+- Visual reporting
+
+---
+
+### 15.10 draft.report
+
+**Purpose**: Draft a structured legal work product from approved findings, templates, style guides, and source references.
+
+**Input Parameters**:
+```json
+{
+  "findings": [...],
+  "template_id": "tmpl-123",
+  "style_guide": "corporate",
+  "output_format": "docx"
+}
+```
+
+**When to Use**:
+- Report generation
+- Document drafting
+- Work product creation
+- Template-based documents
+
+---
+
+### 15.11 human.ask_question
+
+**Purpose**: Represent a clarifying question, approval request, or legal judgment checkpoint for a human reviewer.
+
+**Input Parameters**:
+```json
+{
+  "question": "Should we accept the unlimited liability clause?",
+  "context": "Contract negotiation with ABC Corp",
+  "options": ["Accept", "Reject", "Counter with cap"]
+}
+```
+
+**When to Use**:
+- Human-in-the-loop decisions
+- Approval requests
+- Clarification needed
+- Judgment calls
+
+---
+
+## 16. Tool Risk Levels and Confirmations
+
+Every tool has a risk level that determines how it behaves:
+
+### Risk Level System
+
+| Risk Level | Behavior | User Interaction |
+|------------|----------|------------------|
+| **Low** | Automatic execution | No confirmation needed |
+| **Medium** | Confirmation prompt | User must confirm before execution |
+| **High** | Approval required | User must explicitly approve |
+| **Critical** | Human-in-the-loop | Requires human judgment at each step |
+
+### Risk Level Assignments
+
+| Tool | Risk Level | Requires Confirmation | Irreversible |
+|------|------------|----------------------|--------------|
+| searchDocuments | Low | No | No |
+| searchFilesByName | Low | No | No |
+| webSearch | Low | No | No |
+| httpGet | Low | No | No |
+| readDocument | Low | No | No |
+| email | Medium | Yes | Yes |
+| emailDraft | Medium | No | No |
+| workspaceTask | Medium | Yes | No |
+| workspaceMembers | Low | No | No |
+| workspace_add_item | Medium | Yes | No |
+| search_clause_library | Low | No | No |
+| intelligent_edit | Medium | No | No |
+| analyze_clauses | Low | No | No |
+| compliance_check | Low | No | No |
+| document_review | Low | No | No |
+| generate_analysis_table | Low | No | No |
+| compare_documents | Low | No | No |
+| negotiation_support | Low | No | No |
+| extract_timelines | Low | No | No |
+| prepare_approval_package | Low | No | No |
+| workspace_analysis | Low | No | No |
+| legal_research | Low | No | No |
+| risk_assessment | Low | No | No |
+| sandboxExec | Medium | No | No |
+| pythonInterpreter | Medium | No | No |
+| pptxVisualInspect | Low | No | No |
+| matterScan | Low | No | No |
+| documentClassify | Low | No | No |
+| tabularReview | Medium | No | No |
+| redline (agentic) | High | Yes | Yes |
+| draft.report | High | Yes | Yes |
+
+### Confirmation Flow
+
+```
+Medium Risk Tool Call
+        │
+        ▼
+┌─────────────────┐
+│ Show user what  │
+│ tool will do    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ User confirms   │
+│ or cancels      │
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+ Execute   Cancel
+```
+
+---
+
+## 17. Tool Dependencies and Ordering
+
+Some tools depend on others and must be called in specific orders.
+
+### Dependency Map
+
+```
+searchDocuments ──────┐
+                      │
+searchFilesByName ────┤
+                      │
+workspaceRagRetrieve ─┤───► readDocument ────► findInDocument
+                      │         │
+webSearch ────────────┤         │
+                      │         ▼
+httpGet ──────────────┘   analyze_clauses
+                      │         │
+                      │         ▼
+                      │   document_review
+                      │         │
+                      │         ▼
+                      │   generate_analysis_table
+                      │
+                      └──► compareDocuments
+                               │
+                               ▼
+                          negotiation_support
+                               │
+                               ▼
+                          editDocument
+                               │
+                               ▼
+                          file_redline
+```
+
+### Common Dependency Chains
+
+**Document Review Chain**:
+1. searchDocuments or workspaceRagRetrieve
+2. readDocument
+3. analyze_clauses or document_review
+4. generate_analysis_table (optional)
+
+**Contract Negotiation Chain**:
+1. readDocument (our version)
+2. readDocument (counterparty version)
+3. compare_documents
+4. negotiation_support
+5. editDocument or file_redline
+
+**Due Diligence Chain**:
+1. matterScan
+2. documentClassify
+3. tabularReview
+4. workspace_analysis
+5. draft.report
+
+**Compliance Review Chain**:
+1. readDocument
+2. compliance_check
+3. risk_assessment
+4. prepare_approval_package
+
+### Parallel Execution
+
+Tools that don't depend on each other can run simultaneously:
+
+```
+Parallel Group 1:
+├── searchDocuments(query A)
+├── searchDocuments(query B)
+└── webSearch(query C)
+
+Parallel Group 2 (after Group 1):
+├── readDocument(doc-123)
+├── readDocument(doc-456)
+└── readDocument(doc-789)
+
+Parallel Group 3 (after Group 2):
+├── analyze_clauses(doc-123)
+├── document_review(doc-456)
+└── compliance_check(doc-789)
+```
+
+---
+
+## 18. Tool Failure Modes and Retries
+
+### Common Failure Types
+
+| Failure Type | Description | Retry Strategy |
+|--------------|-------------|----------------|
+| **Timeout** | Tool took too long | Retry once with simpler parameters |
+| **Not Found** | Document/file doesn't exist | Check ID, try search first |
+| **Permission** | Access denied | Verify permissions, check workspace |
+| **Validation** | Invalid parameters | Fix parameters, retry |
+| **Network** | External service unavailable | Wait and retry |
+| **Rate Limit** | Too many requests | Wait and retry |
+| **Quota** | Storage/API limit reached | Free space or wait |
+
+### Timeout Values
+
+| Tool Category | Timeout | Description |
+|---------------|---------|-------------|
+| Standard Tools | 30 seconds | Most tools |
+| Sandbox Tools | 125 seconds | Code execution |
+| Document Generation | 60 seconds | File creation |
+| Web Operations | 20 seconds | HTTP requests |
+
+### Retry Behavior
+
+**Automatic Retries**:
+- Network timeouts: 1 retry after 2 seconds
+- Rate limits: 1 retry after 5 seconds
+- Temporary failures: 1 retry after 3 seconds
+
+**No Auto-Retries**:
+- Permission errors
+- Not found errors
+- Validation errors
+- Quota exceeded
+
+### Error Response Format
+
+```json
+{
+  "success": false,
+  "error": "Document not found: doc-123",
+  "error_code": "NOT_FOUND",
+  "tool": "readDocument",
+  "suggestion": "Try searchDocuments to find the correct document ID"
+}
+```
+
+---
+
+## 19. Tool Performance Characteristics
+
+### Latency Estimates
+
+| Tool | Expected Latency | Token Usage | Notes |
+|------|-------------------|-------------|-------|
+| searchDocuments | 200-500ms | 500-2000 | Depends on index size |
+| searchFilesByName | 100-300ms | 200-500 | Fast database query |
+| workspaceRagRetrieve | 200-500ms | 500-2000 | Similar to searchDocuments |
+| webSearch | 1-3 seconds | 500-1500 | External API |
+| httpGet | 1-5 seconds | 1000-3000 | Network dependent |
+| readDocument | 500-2000ms | 2000-8000 | File size dependent |
+| findInDocument | 200-500ms | 500-1000 | Fast search |
+| generateDocx | 2-5 seconds | 1000-3000 | File generation |
+| editDocument | 1-3 seconds | 1000-2000 | Change tracking |
+| compareDocuments | 2-5 seconds | 2000-5000 | Semantic analysis |
+| analyze_clauses | 3-8 seconds | 3000-8000 | AI analysis |
+| compliance_check | 3-8 seconds | 3000-8000 | AI analysis |
+| document_review | 3-10 seconds | 4000-10000 | Comprehensive analysis |
+| generate_analysis_table | 2-5 seconds | 2000-5000 | Table generation |
+| negotiation_support | 3-8 seconds | 3000-8000 | AI analysis |
+| extract_timelines | 2-5 seconds | 2000-5000 | Date extraction |
+| prepare_approval_package | 2-5 seconds | 2000-5000 | Package creation |
+| workspace_analysis | 5-15 seconds | 5000-15000 | Multi-document |
+| legal_research | 3-10 seconds | 3000-10000 | Multi-source |
+| risk_assessment | 3-8 seconds | 3000-8000 | Risk analysis |
+| email (search) | 500-2000ms | 500-2000 | External API |
+| emailDraft | 500-1500ms | 500-1500 | Draft creation |
+| workspaceTask | 200-500ms | 300-800 | Database operation |
+| sandboxExec | 5-60 seconds | 1000-5000 | Code execution |
+| pythonInterpreter | 5-60 seconds | 1000-5000 | Code execution |
+| matterScan | 3-10 seconds | 3000-10000 | Analysis |
+| documentClassify | 2-5 seconds | 2000-5000 | Classification |
+| tabularReview | 5-15 seconds | 5000-15000 | Multi-document |
+| redline (agentic) | 3-10 seconds | 3000-10000 | Edit generation |
+
+### Token Usage Categories
+
+| Category | Tokens | Description |
+|----------|--------|-------------|
+| Minimal | < 500 | Simple queries, file listings |
+| Light | 500-2000 | Basic searches, reads |
+| Medium | 2000-5000 | Analysis, comparisons |
+| Heavy | 5000-10000 | Comprehensive reviews |
+| Very Heavy | > 10000 | Multi-document analysis |
+
+### Performance Optimization Tips
+
+1. **Use specific queries**: "indemnity clause in contract" vs "find stuff about indemnity"
+2. **Limit result counts**: Use topK/limit parameters appropriately
+3. **Use findInDocument** for specific searches within documents
+4. **Use workspaceRagRetrieve** in workspace context instead of searchDocuments
+5. **Use httpGet** after webSearch for full page content
+6. **Batch operations**: Use fetchDocuments for multiple documents
+
+---
+
+## 20. Tool Selection Decision Tree
+
+Use this decision tree to determine which tool to use:
+
+```
+What does the user want to do?
+│
+├── Find information
+│   ├── In personal documents ──► searchDocuments
+│   ├── In workspace documents ──► workspaceRagRetrieve
+│   ├── By filename ──► searchFilesByName
+│   ├── On the internet ──► webSearch
+│   ├── In a specific URL ──► httpGet
+│   └── In a specific document ──► findInDocument
+│
+├── Read/understand a document
+│   ├── Full document content ──► readDocument
+│   ├── Specific section ──► findInDocument
+│   ├── Multiple documents ──► fetchDocuments
+│   └── Table data ──► readTableCells
+│
+├── Create a document
+│   ├── New document from scratch ──► generateDocx
+│   ├── From a template ──► fillAndCreate
+│   ├── Presentation ──► sandboxExec (make-pptx)
+│   └── Spreadsheet ──► sandboxExec (make-xlsx)
+│
+├── Edit a document
+│   ├── Make changes ──► editDocument
+│   ├── Redline ──► file_redline or redline (agentic)
+│   ├── Suggest improvements ──► suggestEdit
+│   └── Smart edits ──► intelligent_edit
+│
+├── Analyze documents
+│   ├── Quick review ──► document_review
+│   ├── Clause analysis ──► analyze_clauses
+│   ├── Compliance check ──► compliance_check
+│   ├── Risk assessment ──► risk_assessment
+│   ├── Compare documents ──► compare_documents
+│   ├── Extract timelines ──► extract_timelines
+│   ├── Generate tables ──► generate_analysis_table
+│   └── Workspace analysis ──► workspace_analysis
+│
+├── Legal research
+│   ├── General research ──► legalResearch
+│   ├── Case law ──► legalResearch (case_law source)
+│   ├── Regulations ──► legalResearch (regulations source)
+│   └── Negotiation help ──► negotiation_support
+│
+├── Manage workspace
+│   ├── Create project ──► createProject
+│   ├── Create workspace ──► createWorkspace
+│   ├── Add item ──► workspace_add_item
+│   ├── Manage tasks ──► workspaceTask
+│   └── Find members ──► workspaceMembers
+│
+├── Email operations
+│   ├── Read/search email ──► email
+│   └── Draft email ──► emailDraft
+│
+├── Execute code
+│   ├── Shell commands ──► sandboxExec
+│   ├── Python code ──► pythonInterpreter
+│   └── Read sandbox file ──► sandboxReadFile
+│
+└── Advanced AI operations
+    ├── Matter assessment ──► matterScan
+    ├── Document classification ──► documentClassify
+    ├── Structured review ──► tabularReview
+    └── Report drafting ──► draft.report
+```
+
+### Quick Reference by Use Case
+
+| Use Case | Primary Tool | Secondary Tool |
+|----------|--------------|----------------|
+| "Find contracts about X" | searchDocuments | searchFilesByName |
+| "Read this document" | readDocument | findInDocument |
+| "Create a contract" | generateDocx | fillAndCreate |
+| "Review this contract" | document_review | analyze_clauses |
+| "Compare two versions" | compare_documents | editDocument |
+| "Check compliance" | compliance_check | risk_assessment |
+| "Draft an email" | emailDraft | email |
+| "Create a task" | workspaceTask | workspaceMembers |
+| "Research this topic" | legalResearch | webSearch |
+| "Run Python code" | pythonInterpreter | sandboxExec |
+
+---
+
+## 21. Complete Tool Reference Table
+
+Master table of ALL tools with key attributes:
+
+| Name | Category | Purpose | Risk Level | Latency | Dependencies |
+|------|----------|---------|------------|---------|--------------|
+| searchDocuments | Search | Semantic search through personal documents | Low | 200-500ms | None |
+| searchFilesByName | Search | Search files by filename | Low | 100-300ms | None |
+| workspaceRagRetrieve | Search | Search workspace documents | Low | 200-500ms | Workspace context |
+| webSearch | Search | Web search using Exa | Low | 1-3s | API key |
+| httpGet | Search | Fetch URL content | Low | 1-5s | None |
+| readDocument | Document | Read document content | Low | 500-2000ms | Document exists |
+| findInDocument | Document | Search within document | Low | 200-500ms | Document exists |
+| generateDocx | Document | Create Word document | Medium | 2-5s | None |
+| editDocument | Document | Apply tracked changes | Medium | 1-3s | Document exists |
+| compareDocuments | Document | Compare two documents | Low | 2-5s | Both documents exist |
+| listDocuments | Document | List workspace documents | Low | 100-300ms | None |
+| extractClauses | Document | Extract specific clauses | Low | 1-2s | Document exists |
+| consistencyCheck | Document | Check document consistency | Low | 1-3s | Document exists |
+| fillAndCreate | Document | Fill template and create | Medium | 2-5s | Template exists |
+| suggestEdit | Document | Suggest document edits | Low | 1-3s | Document exists |
+| extractPlaceholders | Document | Extract template placeholders | Low | 500-1000ms | Document exists |
+| fillPlaceholders | Document | Fill placeholder values | Medium | 1-2s | Document exists |
+| fetchDocuments | Document | Fetch multiple documents | Low | 1-3s | Documents exist |
+| replicateDocument | Document | Copy document | Medium | 1-2s | Document exists |
+| readTableCells | Document | Read table data | Low | 500-1000ms | Document exists |
+| analysisTable | Legal | Generate analysis tables | Low | 2-5s | Documents exist |
+| clauseAnalysis | Legal | Clause-by-clause analysis | Low | 3-8s | Document exists, API key |
+| complianceCheck | Legal | Compliance analysis | Low | 3-8s | Document exists, API key |
+| documentReview | Legal | Comprehensive review | Low | 3-10s | Document exists, API key |
+| intelligentEdit | Legal | Smart edit suggestions | Medium | 3-8s | Document exists, API key |
+| stampDutyCalculate | Legal | Calculate stamp duty | Low | 1-2s | Document exists |
+| deadlineCalculate | Legal | Calculate deadlines | Medium | 1-3s | Document exists |
+| negotiateSupport | Legal | Negotiation assistance | Low | 3-8s | Document exists, API key |
+| extractTimelines | Legal | Extract dates/deadlines | Low | 2-5s | Document exists, API key |
+| prepareApprovalPackage | Legal | Prepare approval materials | Low | 2-5s | Document exists, API key |
+| workspaceAnalysis | Legal | Cross-document analysis | Low | 5-15s | Documents exist, API key |
+| legalResearch | Legal | Comprehensive legal research | Low | 3-10s | API key |
+| riskAssessment | Legal | Risk scoring | Low | 3-8s | Document exists, API key |
+| generateImage | Generation | Generate images | Medium | 5-15s | API key |
+| generateVideo | Generation | Generate videos | Medium | 10-30s | API key |
+| pptxVisualInspect | Generation | Inspect presentation slides | Low | 2-5s | Image file exists |
+| pythonInterpreter | Generation | Run Python code | Medium | 5-60s | Sandbox enabled |
+| email | Email | Email operations | Medium | 500-2000ms | Email connected |
+| emailDraft | Email | Draft emails | Medium | 500-1500ms | Email connected |
+| createProject | Workspace | Create project | Medium | 200-500ms | Workspace exists |
+| createWorkspace | Workspace | Create workspace | Medium | 200-500ms | None |
+| workspaceAddItem | Workspace | Add workspace item | Medium | 200-500ms | Workspace exists |
+| workspaceTask | Task | Manage tasks | Medium | 200-500ms | Workspace context |
+| workspaceMembers | Task | Find team members | Low | 200-500ms | Workspace context |
+| listWorkflows | Workflow | List workflows | Low | 100-300ms | Workspace exists |
+| readWorkflow | Workflow | Read workflow | Low | 100-300ms | Workflow exists |
+| moveFile | File | Move files | Medium | 200-500ms | File exists |
+| fileRedline | File | Create redline | Medium | 1-3s | Document exists |
+| indianStock | External | Stock market data | Low | 1-3s | API available |
+| sandboxExec | Sandbox | Execute shell commands | Medium | 5-60s | Sandbox enabled |
+| sandboxReadFile | Sandbox | Read sandbox file | Low | 100-500ms | Sandbox enabled |
+| sandboxWriteFile | Sandbox | Write sandbox file | Medium | 100-500ms | Sandbox enabled |
+| sandboxEditFile | Sandbox | Edit sandbox file | Medium | 100-500ms | Sandbox enabled |
+| sandboxListDir | Sandbox | List sandbox directory | Low | 100-300ms | Sandbox enabled |
+| matterScan | Agentic | Assess matter structure | Low | 3-10s | API key |
+| documentClassify | Agentic | Classify documents | Low | 2-5s | API key |
+| tabularReview | Agentic | Structured review | Medium | 5-15s | API key |
+| redline (agentic) | Agentic | Create redlines | High | 3-10s | API key |
+| list.extract_items | Agentic | Extract checklist items | Medium | 2-5s | API key |
+| list.extract_chronology | Agentic | Extract chronology | Medium | 3-8s | API key |
+| monitor.scan | Agentic | Monitor regulations | Low | 3-10s | API key |
+| review.gap_analysis | Agentic | Gap analysis | Medium | 5-15s | API key |
+| visualization.generate_spec | Agentic | Generate visualization | Low | 2-5s | API key |
+| draft.report | Agentic | Draft reports | High | 5-15s | API key |
+| human.ask_question | Agentic | Ask human question | Low | Instant | None |
+
+---
+
+## Appendix A: Tool Execution Architecture
+
+### Tool Execution Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    AI MODEL                                 │
+│  (Generates tool calls based on user message)               │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│               TOOL SCHEMA VALIDATOR                         │
+│  (Validates tool call parameters against schemas)           │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│               TOOL DISPATCHER                               │
+│  (Routes to correct executor, checks permissions)           │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│               RISK CHECKER                                  │
+│  (Checks risk level, prompts for confirmation if needed)    │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│               TOOL EXECUTOR                                 │
+│  (Executes the actual tool logic)                           │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│               OUTPUT VALIDATOR                              │
+│  (Validates tool output for consistency)                    │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│               RESULT RETURNER                               │
+│  (Returns formatted result to AI model)                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+1. **Tool Schema Validator**: Ensures parameters match expected types and required fields
+2. **Tool Dispatcher**: Routes tool calls to the correct executor based on tool name
+3. **Risk Checker**: Evaluates risk level and prompts for user confirmation when needed
+4. **Tool Executor**: Contains the actual logic for each tool
+5. **Output Validator**: Ensures tool outputs are semantically consistent
+6. **Result Returner**: Formats and returns results to the AI model
+
+---
+
+## Appendix B: Tool Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| PRISM_SANDBOX_EXECUTION_ENABLED | Enable sandbox tools | false |
+| READ_DOCUMENT_MAX_TOOL_CHARS | Max document read size | 120000 |
+| PDF_OCR_FALLBACK_TIMEOUT_MS | PDF OCR timeout | 20000 |
+| EXA_API_KEY | Exa Search API key | Required for webSearch |
+
+### Feature Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| sandbox_office_generation | Use sandbox for Office generation | false |
+| live_editor_drafting | Enable live editor tools | false |
+| agent_debug_enabled | Enable agent debugging | false |
+
+---
+
+## Appendix C: Glossary
+
+| Term | Definition |
+|------|------------|
+| **Tool Call** | A request from the AI to execute a specific function |
+| **Parameter** | An input value passed to a tool |
+| **Result** | The output returned by a tool |
+| **Risk Level** | Classification of tool danger level |
+| **Confirmation** | User approval required before execution |
+| **Sandbox** | Secure, isolated execution environment |
+| **RAG** | Retrieval-Augmented Generation - searching indexed content |
+| **Workspace** | Collaborative project space |
+| **Matter** | Legal case or transaction |
+| **Redline** | Document with tracked changes showing modifications |
+| **Compliance** | Adherence to regulations or policies |
+| **Due Diligence** | Investigation and review of a matter |
+| **Agentic** | Advanced AI operations requiring multiple steps |
+
+---
+
+*Document Version: 1.0*
+*Last Updated: 2024*
+*Total Tools Documented: 50+*
+*Categories: 15*
